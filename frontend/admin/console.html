@@ -1,0 +1,560 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>zcode-hub · 控制台</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%235b8def' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M12 2 2 7l10 5 10-5-10-5Z'/%3E%3Cpath d='m2 17 10 5 10-5'/%3E%3Cpath d='m2 12 10 5 10-5'/%3E%3C/svg%3E">
+  <link href="https://cdn.jsdelivr.net/npm/geist@1.0.0/dist/fonts/geist-sans/style.css" rel="stylesheet">
+  <link href="/static/css/app.css?v={{APP_VERSION}}" rel="stylesheet">
+</head>
+<body>
+
+<div class="zh-topbar">
+  <div class="zh-topbar-inner">
+    <span class="zh-brand">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2 2 7l10 5 10-5-10-5Z"/><path d="m2 17 10 5 10-5"/><path d="m2 12 10 5 10-5"/></svg>
+      <span>Z<span class="tick">·</span>HUB</span>
+    </span>
+    <div class="zh-status" id="zh-status">
+      <span class="zh-dot" id="zh-dot"></span><span id="zh-status-text">连接中</span>
+    </div>
+    <div class="zh-topbar-act">
+      <span class="admin-header-version" id="zh-version"></span>
+      <button class="admin-header-icon-btn" data-act="logout" title="退出登录" aria-label="退出登录">
+        <svg viewBox="0 0 24 24"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><path d="M16 17l5-5-5-5"/><path d="M21 12H9"/></svg>
+      </button>
+    </div>
+  </div>
+  <nav class="zh-tabs" id="zh-tabs"></nav>
+</div>
+
+<main class="zh-main">
+  <div class="zh-lock on" id="zh-lock">正在校验后台密码…</div>
+
+  <!-- ── 01 概览 ── -->
+  <section class="zh-sec" id="zh-sec-overview">
+    <div class="zh-hd">
+      <div>
+        <div class="zh-eyebrow">Gateway Console · Overview</div>
+        <h1 class="zh-h1">概览</h1>
+        <div class="zh-desc">号池健康、流量与成功率、token 与参考费用、上游模型与准入状态。</div>
+      </div>
+      <div class="zh-hd-actions">
+        <button class="page-action-btn" data-act="ov-refresh">刷新</button>
+      </div>
+    </div>
+    <div class="zh-note" id="ov-note"></div>
+
+    <div class="zh-card">
+      <div class="zh-card-hd">
+        <div>
+          <div class="zh-card-ttl">号池健康</div>
+          <div class="zh-card-desc">账号数、可用与异常、剩余额度总览。额度是上游按 units 计的配额，不是金额。</div>
+          <span class="zh-card-meta" id="ov-pool-meta"></span>
+        </div>
+      </div>
+      <div class="zh-card-bd"><div class="zh-tiles" id="ov-pool"></div></div>
+    </div>
+
+    <div class="zh-card">
+      <div class="zh-card-hd">
+        <div>
+          <div class="zh-card-ttl">请求与成功率</div>
+          <div class="zh-card-desc">统计口径为内存环形日志，只含最近 500 条，重启即清零；长期统计请接外部采集。</div>
+          <span class="zh-card-meta" id="ov-traffic-meta"></span>
+        </div>
+      </div>
+      <div class="zh-card-bd"><div class="zh-tiles" id="ov-traffic"></div></div>
+    </div>
+
+    <div class="zh-duo">
+    <div class="zh-card">
+      <div class="zh-card-hd">
+        <div>
+          <div class="zh-card-ttl">token 与参考费用</div>
+          <span class="zh-card-meta" id="ov-cost-meta"></span>
+        </div>
+      </div>
+      <div class="zh-card-bd"><div id="ov-cost"></div></div>
+    </div>
+
+    <div class="zh-card">
+      <div class="zh-card-hd">
+        <div>
+          <div class="zh-card-ttl">上游模型与准入</div>
+          <span class="zh-card-meta" id="ov-access-meta"></span>
+        </div>
+      </div>
+      <div class="zh-card-bd"><div id="ov-access"></div></div>
+      <div class="zh-card-ft">改名单与看价目请去 <a class="zh-lnk" href="#models">04 / 模型与计价</a>。</div>
+    </div>
+    </div>
+  </section>
+
+  <!-- ── 02 账号池与授权 ── -->
+  <section class="zh-sec" id="zh-sec-accounts">
+    <div class="zh-hd">
+      <div>
+        <div class="zh-eyebrow">Gateway Console · Account Pool</div>
+        <h1 class="zh-h1">账号池与授权</h1>
+        <div class="zh-desc">多账号轮询 · 额度用完自动切换下一个账号 · 实时用量与套餐额度。</div>
+      </div>
+      <div class="zh-hd-actions">
+        <span class="live-dot" id="acct-live">实时监控中</span>
+        <button class="page-action-btn" data-act="acct-import">导入</button>
+        <button class="page-action-btn" data-act="acct-export">导出</button>
+        <button class="page-action-btn" data-act="acct-claim-all" id="acct-btn-claim-all">一键领取</button>
+      </div>
+    </div>
+
+    <div class="zh-card">
+      <div class="zh-card-hd">
+        <div>
+          <div class="zh-card-ttl">账号池 <span class="section-count-badge" id="acct-count">0</span></div>
+          <div class="zh-card-desc">每个账号的额度、状态与最近错误。轮询按 round-robin 选号，满并发或额度耗尽自动跳过。</div>
+          <span class="zh-card-meta" id="acct-updated"></span>
+        </div>
+        <div class="zh-card-act">
+          <button class="page-action-btn" data-act="acct-refresh-all" id="acct-btn-refresh-all">刷新额度</button>
+          <button class="page-action-btn page-action-btn-primary" data-act="acct-add">新增</button>
+        </div>
+      </div>
+      <div class="zh-card-bd">
+        <div class="zh-tiles" id="acct-tiles"></div>
+        <div class="filter-bar" id="acct-filters"></div>
+        <div class="acct-list" id="acct-list"></div>
+      </div>
+    </div>
+
+    <div class="zh-card">
+      <div class="zh-card-hd">
+        <div>
+          <div class="zh-card-ttl">OAuth 快速授权</div>
+          <div class="zh-oauth-state" id="acct-login-state" hidden>
+            <span class="live-dot" id="acct-login-status">后台捕获中…</span>
+            <button class="page-action-btn" data-act="acct-cancel-login">取消本次授权</button>
+          </div>
+        </div>
+      </div>
+      <div class="zh-card-bd">
+        <div id="acct-login-idle">
+          <div class="zh-fld-row" style="max-width:520px">
+            <input class="input" id="acct-login-label" placeholder="账号备注（可选，如 acct-1）" maxlength="32">
+            <button class="page-action-btn page-action-btn-primary" data-act="acct-start-login" id="acct-login-start-btn">生成授权链接</button>
+          </div>
+        </div>
+        <div id="acct-login-active" style="display:none">
+          <div class="zh-fld-row" style="max-width:640px">
+            <input class="input" id="acct-login-url" readonly>
+            <button class="page-action-btn" data-act="acct-copy-login">复制</button>
+            <button class="page-action-btn page-action-btn-primary" data-act="acct-open-login">打开授权</button>
+          </div>
+        </div>
+      </div>
+      <div class="zh-card-ft">
+        海外邮箱 / Google 账号：上游授权页默认只展示国内手机号登录。先在同一浏览器打开
+        <a class="zh-lnk" href="https://chat.z.ai/auth?redirect_uri=https://z.ai/" target="_blank" rel="noopener">预登录入口</a>
+        完成登录，再生成授权链接并打开，即可秒级入池。
+      </div>
+    </div>
+  </section>
+
+  <!-- ── 03 客户端接入 ── -->
+  <section class="zh-sec" id="zh-sec-access">
+    <div class="zh-hd">
+      <div>
+        <div class="zh-eyebrow">Gateway Console · Client Access</div>
+        <h1 class="zh-h1">客户端接入</h1>
+        <div class="zh-desc">网关对外的端点地址、鉴权 Key 与模型列表入口，照着填进客户端即可。</div>
+      </div>
+      <div class="zh-hd-actions">
+        <button class="page-action-btn" data-act="acc-refresh">刷新</button>
+      </div>
+    </div>
+
+    <div class="zh-card">
+      <div class="zh-card-hd">
+        <div>
+          <div class="zh-card-ttl">接入地址</div>
+          <div class="zh-card-desc">地址随当前浏览器访问的主机名生成；从别处接入时请换成对外的 IP 或域名。</div>
+          <span class="zh-card-meta" id="acc-model-meta"></span>
+        </div>
+      </div>
+      <div class="zh-card-bd">
+        <div class="zh-fld-grid">
+          <div>
+            <div class="zh-fld-lb">Base URL</div>
+            <div class="zh-fld-row">
+              <input class="input" id="acc-base" readonly>
+              <button class="page-action-btn" data-act="acc-copy" data-src="acc-base">复制</button>
+            </div>
+            <div class="zh-fld-hint">填进客户端的「服务器地址 / Base URL」一栏，后面自带 <code>/v1</code>。</div>
+          </div>
+          <div>
+            <div class="zh-fld-lb">Anthropic Messages 端点</div>
+            <div class="zh-fld-row">
+              <input class="input" id="acc-msgs" readonly>
+              <button class="page-action-btn" data-act="acc-copy" data-src="acc-msgs">复制</button>
+            </div>
+            <div class="zh-fld-hint">Claude Code、Anthropic SDK 走这个；可用 <code>Authorization: Bearer</code> 或 <code>x-api-key</code>。</div>
+          </div>
+          <div>
+            <div class="zh-fld-lb">OpenAI 兼容端点</div>
+            <div class="zh-fld-row">
+              <input class="input" id="acc-oai" readonly>
+              <button class="page-action-btn" data-act="acc-copy" data-src="acc-oai">复制</button>
+            </div>
+            <div class="zh-fld-hint">OpenAI SDK 及其生态走这个，只认 <code>Authorization: Bearer &lt;key&gt;</code>。</div>
+          </div>
+          <div>
+            <div class="zh-fld-lb">模型列表</div>
+            <div class="zh-fld-row">
+              <input class="input" id="acc-models" readonly>
+              <button class="page-action-btn" data-act="acc-copy" data-src="acc-models">复制</button>
+            </div>
+            <div class="zh-fld-hint" id="acc-model-hint">客户端通常靠这个接口自动补全模型名。</div>
+          </div>
+        </div>
+        <div style="margin-top:18px">
+          <div class="zh-fld-lb">最小可跑请求</div>
+          <div class="zh-fld-row">
+            <textarea class="input price-json" id="acc-curl" rows="3" readonly spellcheck="false"></textarea>
+            <button class="page-action-btn" data-act="acc-copy" data-src="acc-curl">复制</button>
+          </div>
+          <div class="zh-fld-hint">把 <code>&lt;网关 Key&gt;</code> 换成上面那张卡里的 Key；未启用校验时可以整段删掉。</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="zh-card">
+      <div class="zh-card-hd">
+        <div>
+          <div class="zh-card-ttl">网关 API Key <span class="section-count-badge" id="acc-key-count">0</span></div>
+          <span class="zh-card-meta" id="acc-gwkey-meta"></span>
+        </div>
+        <div class="zh-card-act">
+          <button class="page-action-btn page-action-btn-primary" data-act="acc-new-key">生成新 Key</button>
+        </div>
+      </div>
+      <div class="zh-card-bd">
+        <div class="zh-keyreveal" id="acc-key-reveal" hidden></div>
+        <div class="zh-keylist" id="acc-key-list"></div>
+        <div class="zh-fld-hint" style="margin-top:12px">忘了某把 Key 只能删掉重建：这里不回显，也没有「找回」。「用量与明细」页可按 Key 分开统计调用量。</div>
+      </div>
+      <div class="zh-card-ft" id="acc-reco"></div>
+    </div>
+  </section>
+
+  <!-- ── 04 模型与计价 ── -->
+  <section class="zh-sec" id="zh-sec-models">
+    <div class="zh-hd">
+      <div>
+        <div class="zh-eyebrow">Gateway Console · Models &amp; Pricing</div>
+        <h1 class="zh-h1">模型与计价</h1>
+        <div class="zh-desc">上游实际提供的模型、准入白名单，以及作为计价中间层的开放平台参考价。</div>
+      </div>
+      <div class="zh-hd-actions">
+        <button class="page-action-btn" data-act="mdl-refresh">刷新</button>
+      </div>
+    </div>
+    <div class="zh-note" id="mdl-note">价目来自智谱开放平台（docs.bigmodel.cn）的公开定价页，那是另一个产品的账；本网关上游 ZCode 按 units 计额度、不按货币出账，所以一切「元」都是参考估算。</div>
+
+    <div class="zh-card">
+      <div class="zh-card-hd">
+        <div>
+          <div class="zh-card-ttl">上游模型</div>
+          <div class="zh-card-desc">只列上游实际提供的模型：实测常量 ∪ 号池权益推导，与白名单模式无关。圆点 = 号池额度，红标签 = 名单外。点击复制模型名。</div>
+          <span class="zh-card-meta" id="mdl-chip-meta"></span>
+        </div>
+      </div>
+      <div class="zh-card-bd">
+        <div class="zh-chips" id="mdl-chips"></div>
+        <div class="zh-legend"></div>
+      </div>
+      <div class="zh-card-ft">是否被上游 3006 钉在某个号上属按号状态，账号卡片上能看到；本表不下这个结论。</div>
+    </div>
+
+    <div class="zh-card">
+      <div class="zh-card-hd">
+        <div>
+          <div class="zh-card-ttl">模型白名单</div>
+          <div class="zh-card-desc">策略口径：决定进入网关的请求放行哪些模型名。名单外的请求直接拒掉，不占账号。</div>
+        </div>
+        <div class="zh-card-act"><button class="page-action-btn page-action-btn-primary" data-act="mdl-save-wl">保存</button></div>
+      </div>
+      <div class="zh-card-bd">
+        <div class="zh-fld-grid">
+          <div>
+            <div class="zh-fld-lb">白名单模式</div>
+            <select class="input" id="mdl-wl-mode"></select>
+            <div class="zh-fld-hint"><code>manual</code>（默认）只认手填名单；<code>static</code> 只认内置名单；<code>dynamic</code> 只认账号额度里实际列出的模型；<code>hybrid</code> = 内置 ∪ 额度派生。上游真回 3006 时把「这个号不含这个模型」钉在该号上（默认 7 天自动失效），选号直接跳过它，不会把号判废。</div>
+            <div class="zh-fld-hint" id="mdl-wl-effective"></div>
+          </div>
+          <div>
+            <div class="zh-fld-lb">手填名单（每行一个）</div>
+            <textarea class="input price-json" id="mdl-wl-names" rows="4" spellcheck="false" placeholder="GLM-5.3-Flash&#10;GLM-5.3"></textarea>
+            <div class="zh-fld-hint">只按名字放行，别名与大小写自动归一到官方写法。<strong>留空 = 不拦任何模型名</strong>，防止一次误清空把网关锁死。</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="zh-card">
+      <div class="zh-card-hd">
+        <div>
+          <div class="zh-card-ttl">计价参考</div>
+          <div class="zh-card-desc">三层优先级：内置 &lt; 拉取 &lt; 后台覆盖。单价单位元/百万 token，仅供估算参考，非 ZCode 账单。</div>
+          <span class="zh-card-meta" id="mdl-pull-status"></span>
+        </div>
+        <div class="zh-card-act">
+          <button class="page-action-btn" data-act="mdl-reset-ov" id="mdl-btn-reset-ov" hidden>清除覆盖</button>
+          <button class="page-action-btn" data-act="mdl-pull" id="mdl-btn-pull">立即拉取定价</button>
+        </div>
+      </div>
+      <div class="zh-card-bd">
+        <div class="price-scroll">
+          <div class="price-grid price-head">
+            <span>模型</span><span>档位</span><span>输入</span><span>缓存命中</span><span>缓存写入</span><span>输出</span><span>来源</span>
+          </div>
+          <div id="mdl-price-list"></div>
+        </div>
+        <details class="zh-fold">
+          <summary>开放平台价目参考（<span id="mdl-other-count">0</span> 个模型，本网关上游不提供）</summary>
+          <div class="zh-fold-bd price-scroll">
+            <div id="mdl-other-list"></div>
+          </div>
+        </details>
+        <div class="zh-fld-hint" id="mdl-price-meta" style="line-height:1.9"></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ── 05 用量与明细 ── -->
+  <section class="zh-sec" id="zh-sec-usage">
+    <div class="zh-hd">
+      <div>
+        <div class="zh-eyebrow">Gateway Console · Usage</div>
+        <h1 class="zh-h1">用量与明细</h1>
+        <div class="zh-desc">网关请求实时观测 · 内存环形日志（保留最近 500 条，重启清零）。</div>
+      </div>
+      <div class="zh-hd-actions">
+        <span class="live-dot" id="usage-live">实时监控中</span>
+        <button class="page-action-btn" data-act="usage-refresh">刷新</button>
+        <button class="page-action-btn" data-act="usage-clear" id="usage-btn-clear">清空</button>
+      </div>
+    </div>
+
+    <div class="zh-card">
+      <div class="zh-card-hd zh-card-hd-row">
+        <div>
+          <div class="zh-card-ttl">汇总</div>
+          <div class="zh-card-desc">环形缓冲最近 500 条，被挤掉的不计入；费用是开放平台参考价估算，非 ZCode 账单。</div>
+          <span class="zh-card-meta" id="usage-updated"></span>
+        </div>
+      </div>
+      <div class="zh-card-bd">
+        <div class="filter-bar">
+          <div class="filter-chips" id="usage-range"></div>
+          <input class="input mon-search" id="usage-search" placeholder="搜索账号、模型、内容、错误…">
+          <select class="input mon-select" id="usage-status">
+            <option value="all">全部状态</option>
+            <option value="ok">成功</option>
+            <option value="fail">失败</option>
+            <option value="inflight">进行中</option>
+          </select>
+        </div>
+        <div class="zh-tiles" id="usage-tiles"></div>
+      </div>
+    </div>
+
+    <div class="zh-card">
+      <div class="zh-card-hd">
+        <div class="zh-card-ttl">明细</div>
+        <div class="zh-card-act">
+          <div class="mon-tabs" id="usage-tabs">
+            <button class="mon-tab" data-tab="account">账号</button>
+            <button class="mon-tab" data-tab="key_id">Key</button>
+            <button class="mon-tab" data-tab="model">模型</button>
+            <button class="mon-tab active" data-tab="live">实时 <span class="mon-tab-count" id="usage-count">0</span></button>
+          </div>
+        </div>
+      </div>
+      <div class="zh-card-bd">
+        <div class="acct-scroll"><div class="acct-list" id="usage-list"></div></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ── 06 系统参数 ── -->
+  <section class="zh-sec" id="zh-sec-system">
+    <div class="zh-hd">
+      <div>
+        <div class="zh-eyebrow">Gateway Console · System</div>
+        <h1 class="zh-h1">系统参数</h1>
+        <div class="zh-desc">登录口令与后台调度周期。除口令外各项修改后即时生效，无需重启。</div>
+      </div>
+    </div>
+
+    <div class="zh-card">
+      <div class="zh-card-hd">
+        <div>
+          <div class="zh-card-ttl">登录口令</div>
+          <div class="zh-card-desc">用于登录此管理后台。修改后需用新密码重新登录；输入框显示掩码，未改动保存不会覆盖原值。</div>
+        </div>
+        <div class="zh-card-act"><button class="page-action-btn page-action-btn-primary" data-act="sys-save-admin">保存口令</button></div>
+      </div>
+      <div class="zh-card-bd">
+        <div style="max-width:420px;margin:0 auto">
+          <input class="input" id="sys-admin-key" type="password" placeholder="后台密码" autocomplete="new-password">
+          <div class="hint" id="sys-admin-hint" style="display:none;color:var(--accent)">当前仍是默认口令，生产环境请立即更换。</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="zh-card">
+      <div class="zh-card-hd">
+        <div>
+          <div class="zh-card-ttl">调度与容灾</div>
+          <div class="zh-card-desc">三个周期各自独立，设为 0 即关闭该项的自动轮次（手动入口仍可用）；另有一项并发上限。</div>
+        </div>
+        <div class="zh-card-act"><button class="page-action-btn page-action-btn-primary" data-act="sys-save-sched">保存</button></div>
+      </div>
+      <div class="zh-card-bd">
+        <div class="zh-fld-grid">
+          <div>
+            <div class="zh-fld-lb">额度刷新间隔（秒）</div>
+            <input class="input" id="sys-quota-interval" type="number" min="0" step="5" placeholder="1800">
+            <div class="zh-fld-hint">后台自动刷新各账号额度与状态的周期。默认 1800（30 分钟）。</div>
+          </div>
+          <div>
+            <div class="zh-fld-lb">单账号并发上限</div>
+            <input class="input" id="sys-concurrency" type="number" min="0" step="1" placeholder="2">
+            <div class="zh-fld-hint">每个账号同时处理的最大请求数；某账号并发满时自动切下一个账号。0 = 不限制。默认 2。</div>
+          </div>
+          <div>
+            <div class="zh-fld-lb">套餐自动领取轮（秒）</div>
+            <input class="input" id="sys-claim-interval" type="number" min="0" step="30" placeholder="3600">
+            <div class="zh-fld-hint">周期对全部 JWT 账号执行活动套餐领取（激活上报 + 查询 + 领取）。默认 3600（1 小时）。</div>
+          </div>
+          <div>
+            <div class="zh-fld-lb">价目拉取间隔（秒）</div>
+            <input class="input" id="sys-pull-interval" type="number" min="0" step="300" placeholder="0">
+            <div class="zh-fld-hint">条件 GET 公开定价文档站，只读、不携带任何账号身份。默认 0（关闭）——价目属参考层，没必要周期打别人的站。</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ── 07 活动日志 ── -->
+  <section class="zh-sec" id="zh-sec-activity">
+    <div class="zh-hd">
+      <div>
+        <div class="zh-eyebrow">Gateway Console · Activity</div>
+        <h1 class="zh-h1">活动日志</h1>
+        <div class="zh-desc">服务启停、账号增删改、参数与 Key 变更、账号失效。落库存档，重启不清零。</div>
+        <span class="zh-card-meta" id="act-updated"></span>
+      </div>
+      <div class="zh-hd-actions">
+        <button class="page-action-btn" data-act="act-refresh">刷新</button>
+      </div>
+    </div>
+
+    <div class="zh-card">
+      <div class="zh-card-hd">
+        <div>
+          <div class="zh-card-ttl">运行活动</div>
+          <div class="zh-card-desc">只记后台动作与状态跃迁；请求明细在 <a class="zh-lnk" href="#usage">05 / 用量与明细</a>。</div>
+          <span class="zh-card-meta" id="act-count"></span>
+        </div>
+      </div>
+      <div class="zh-card-bd">
+        <div class="filter-bar">
+          <div class="filter-chips" id="act-kinds"></div>
+          <input class="input mon-search" id="act-search" placeholder="搜索事件内容…">
+        </div>
+        <div class="zh-log">
+          <div class="zh-log-head"><span>时间</span><span>事件</span><span>详情</span></div>
+          <div id="act-list"></div>
+        </div>
+      </div>
+      <div class="zh-card-ft" id="act-storage"></div>
+    </div>
+  </section>
+</main>
+
+<!-- 新增账号（粘贴凭证） -->
+<div class="modal-overlay" id="zh-modal-add" role="dialog" aria-modal="true" aria-labelledby="zh-modal-add-title">
+  <div class="modal">
+    <div class="modal-title" id="zh-modal-add-title">新增账号</div>
+    <div class="dialog-body">
+      <div>
+        <div class="dialog-help">每行一个 Coding Plan JWT 或 API Key，已存在的会自动跳过。想用官方授权登录，去「02 / 账号池与授权」的 OAuth 卡片。</div>
+        <textarea class="input" id="acct-add-tokens" rows="7" placeholder="粘贴 JWT / API Key，每行一个..."></textarea>
+      </div>
+      <div class="dialog-field">
+        <span class="dialog-label">提供商</span>
+        <select class="input" id="acct-add-provider"><option value="zai">Z.AI (Coding Plan)</option><option value="bigmodel">BigModel</option></select>
+      </div>
+    </div>
+    <div class="dialog-actions">
+      <button class="dialog-btn" data-act="acct-close-add">取消</button>
+      <button class="dialog-btn dialog-btn-primary" data-act="acct-do-add">添加</button>
+    </div>
+  </div>
+</div>
+
+<!-- 手动领取活动套餐 -->
+<div class="modal-overlay" id="zh-modal-claim" role="dialog" aria-modal="true" aria-labelledby="zh-modal-claim-title">
+  <div class="modal" style="max-width:440px">
+    <div class="modal-title" id="zh-modal-claim-title">手动领取活动套餐</div>
+    <div class="dialog-body">
+      <div class="dialog-help">完成下方人机验证后自动提交领取。活动套餐列表为空时，也可直接输入活动 plan_id 领取。</div>
+      <div class="dialog-field">
+        <span class="dialog-label">账号</span>
+        <select class="input" id="acct-claim-account"></select>
+      </div>
+      <div class="dialog-field">
+        <span class="dialog-label">活动套餐</span>
+        <select class="input" id="acct-claim-plan"><option value="">自动选择（可领套餐中优先级最高）</option></select>
+        <input class="input" id="acct-claim-plan-id" placeholder="或直接填活动 plan_id（如 zcode-v3-start-plan-xxxx）" style="margin-top:8px;font-size:12px">
+      </div>
+      <div id="acct-claim-captcha" style="min-height:80px;margin:12px 0 4px;display:flex;align-items:center;justify-content:center"></div>
+      <div class="dialog-help" id="acct-claim-status" style="min-height:18px"></div>
+    </div>
+    <div class="dialog-actions">
+      <button class="dialog-btn" data-act="acct-close-claim">关闭</button>
+      <button class="dialog-btn dialog-btn-primary" data-act="acct-do-claim" id="acct-claim-submit">领取</button>
+    </div>
+  </div>
+</div>
+
+<!-- 通用对话框（确认 / 编辑） -->
+<div class="modal-overlay" id="zh-dialog" role="dialog" aria-modal="true" aria-labelledby="zh-dialog-title">
+  <div class="modal" style="max-width:440px">
+    <div class="modal-title" id="zh-dialog-title">确认</div>
+    <div class="dialog-body" id="zh-dialog-body"></div>
+    <div class="dialog-actions">
+      <button class="dialog-btn" data-act="dialog-cancel">取消</button>
+      <button class="dialog-btn dialog-btn-primary" data-act="dialog-ok" id="zh-dialog-ok">确认</button>
+    </div>
+  </div>
+</div>
+
+<input type="file" id="acct-import-file" accept=".json" style="display:none">
+<div class="tick-tip" id="zh-tick-tip"></div>
+
+<script src="/static/js/auth.js?v={{APP_VERSION}}"></script>
+<script src="/static/js/toast.js?v={{APP_VERSION}}"></script>
+<script src="/static/js/console/util.js?v={{APP_VERSION}}"></script>
+<script src="/static/js/console/overview.js?v={{APP_VERSION}}"></script>
+<script src="/static/js/console/accounts.js?v={{APP_VERSION}}"></script>
+<script src="/static/js/console/access.js?v={{APP_VERSION}}"></script>
+<script src="/static/js/console/models.js?v={{APP_VERSION}}"></script>
+<script src="/static/js/console/usage.js?v={{APP_VERSION}}"></script>
+<script src="/static/js/console/system.js?v={{APP_VERSION}}"></script>
+<script src="/static/js/console/activity.js?v={{APP_VERSION}}"></script>
+<script src="/static/js/console/shell.js?v={{APP_VERSION}}"></script>
+</body>
+</html>

@@ -21,8 +21,13 @@ _entries: deque = deque(maxlen=KEEP)
 _inflight: dict[str, dict] = {}
 
 
-def begin(req_id: str, endpoint: str, model: str, stream: bool, preview: str = "") -> None:
-    """请求进入网关（鉴权通过、body 解析成功后）。"""
+def begin(req_id: str, endpoint: str, model: str, stream: bool, preview: str = "",
+          key_id: str = "", key_label: str = "") -> None:
+    """请求进入网关（鉴权通过、body 解析成功后）。
+
+    key_id/key_label 是命中的网关 API Key；未启用 Key 校验时为空串，
+    用量页按 Key 聚合会把这些归到「未启用 Key」一档。
+    """
     entry = {
         "req_id": req_id,
         "ts": time.time(),
@@ -32,6 +37,8 @@ def begin(req_id: str, endpoint: str, model: str, stream: bool, preview: str = "
         "preview": (preview or "")[:80],
         "account": "",
         "mode": "",
+        "key_id": key_id,
+        "key_label": key_label,
         "ok": None,
         "status": None,
         "error": "",
@@ -39,6 +46,10 @@ def begin(req_id: str, endpoint: str, model: str, stream: bool, preview: str = "
         "t_total": None,
         "input_tokens": None,
         "output_tokens": None,
+        "cache_read_tokens": None,
+        "cache_write_tokens": None,
+        "cost_ticks": None,
+        "cost_currency": None,
     }
     with _lock:
         _entries.append(entry)
@@ -56,7 +67,9 @@ def mark_account(req_id: str, account_name: str, mode: str) -> None:
 
 def finish_ok(req_id: str, t_first: float | None = None,
               input_tokens: int | None = None, output_tokens: int | None = None,
-              status: int | None = None) -> None:
+              status: int | None = None,
+              cache_read_tokens: int | None = None, cache_write_tokens: int | None = None,
+              cost_ticks: int | None = None, cost_currency: str | None = None) -> None:
     with _lock:
         entry = _inflight.pop(req_id, None)
         if entry is None:
@@ -67,6 +80,10 @@ def finish_ok(req_id: str, t_first: float | None = None,
         entry["t_total"] = time.time() - entry["ts"]
         entry["input_tokens"] = input_tokens
         entry["output_tokens"] = output_tokens
+        entry["cache_read_tokens"] = cache_read_tokens
+        entry["cache_write_tokens"] = cache_write_tokens
+        entry["cost_ticks"] = cost_ticks
+        entry["cost_currency"] = cost_currency
 
 
 def finish_error(req_id: str, error: str, status: int | None = None,

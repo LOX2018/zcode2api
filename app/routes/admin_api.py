@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import time
 
 import httpx
 from fastapi import APIRouter, Body, Depends, HTTPException
 
-from .. import logs, reqlog
+from .. import activity, constants, logs, model_access, pricing, pricing_pull, reqlog
 from ..auth_admin import verify_admin_key
 from ..captcha import CaptchaSolveError
 from ..claim import (
@@ -24,7 +25,7 @@ from ..claim import claim as do_claim
 from ..models import PROVIDERS, Status
 from ..oauth import ZaiAuthFlow
 from ..quota import fetch_quota, refresh_accounts
-from ..store import store
+from ..store import ACTIVITY_KEEP, store
 
 router = APIRouter(prefix="/admin/api", dependencies=[Depends(verify_admin_key)])
 
@@ -56,7 +57,7 @@ async def list_accounts():
 async def status_info():
     return {
         "providers": list(PROVIDERS),
-        "gateway_key_set": bool(store.gateway_key()),
+        "gateway_keys": len(store.api_keys()),
         "quota_pool": {
             p: sum(1 for a in store.list_accounts(p) if a.is_selectable())
             for p in PROVIDERS
@@ -94,18 +95,24 @@ async def add_accounts(payload: dict = Body(...)):
         _schedule_install(acc)  # 按账号安装序（含 apiKey 账号，幂等）
         if acc.mode == "jwt":
             _schedule_auto_claim(acc)  # 授权完成即激活+自动领取，入池即吃满活动
+    if new_accounts:
+        activity.record("account", f"新增 {len(new_accounts)} 个账号："
+                                   + "、".join(a.name for a in new_accounts[:5]))
     return {"count": len(added), "ids": added}
 
 
 # ── 删除账号 ─────────────────────────────────────────────────────────────────
 @router.delete("/accounts")
 async def delete_accounts(ids: list[str] = Body(...)):
-    deleted = 0
+    deleted = []
     for aid in ids:
         acc = store.find_any(aid)
         if acc and store.remove_account(acc.provider, aid):
-            deleted += 1
-    return {"deleted": deleted}
+            deleted.append(acc.name)
+    if deleted:
+        activity.record("account", f"删除 {len(deleted)} 个账号："
+                                   + "、".join(deleted[:5]))
+    return {"deleted": len(deleted)}
 
 
 # ── 编辑账号 ─────────────────────────────────────────────────────────────────
@@ -114,8 +121,10 @@ async def edit_account(account_id: str, payload: dict = Body(...)):
     acc = store.find_any(account_id)
     if not acc:
         raise HTTPException(404, "账号不存在")
+    changed = []
     if "name" in payload and payload["name"]:
         acc.name = payload["name"].strip()
+        changed.append("名称")
     secret = payload.get("token") or payload.get("secret")
     if secret:
         secret = secret.strip()
@@ -130,7 +139,10 @@ async def edit_account(account_id: str, payload: dict = Body(...)):
             acc.jwt_token = None
         acc.status = Status.ACTIVE
         acc.last_error = None
+        changed.append("凭证")
     store.update_account(acc)
+    if changed:
+        activity.record("account", f"编辑账号「{acc.name}」：" + "、".join(changed))
     return {"ok": True}
 
 
@@ -142,6 +154,7 @@ async def set_enabled(account_id: str, payload: dict = Body(...)):
         raise HTTPException(404, "账号不存在")
     enabled = bool(payload.get("enabled", True))
     store.set_enabled(acc.provider, account_id, enabled)
+    activity.record("account", f"{'启用' if enabled else '停用'}账号「{acc.name}」")
     return {"ok": True}
 
 
@@ -210,10 +223,19 @@ async def refresh_one(account_id: str):
 LOGIN_FLOW_TTL = 300.0
 # 兑换 API Key（getCustomerInfo → api_keys → copy）总时长上限
 LOGIN_EXCHANGE_TIMEOUT = 60.0
+# 后台捕获节奏。授权结果不能只活在浏览器那一页里：刷新页面、切页签、换设备都会
+# 让纯前端轮询断线，凭证就此捞不回来（用户侧表现为「授权完了一分多钟还没入池」）。
+# 服务端自己按这个间隔问上游，页面只负责读结果 —— 页面死了捕获也照样完成。
+LOGIN_WATCH_INTERVAL = 1.5
+# 后台先捕获时，结果在这一窗内等页面来取（够一次页面刷新用）
+LOGIN_RESULT_TTL = 180.0
 
 # flow_id -> {"flow": ZaiAuthFlow, "created": float, "label": str}
 # 单进程内存态即可：登录会话不该跨进程存活，重启后用户重新生成链接。
 _login_flows: dict[str, dict] = {}
+# flow_id -> {"payload": dict, "at": float}：后台捕获到的终态，等首个读者取走
+_login_results: dict[str, dict] = {}
+_login_watch_tasks: set[asyncio.Task] = set()
 
 
 def _login_gc() -> None:
@@ -221,6 +243,21 @@ def _login_gc() -> None:
     expired = [fid for fid, entry in _login_flows.items() if now - entry["created"] > LOGIN_FLOW_TTL]
     for fid in expired:
         _login_flows.pop(fid, None)
+    for fid, rec in list(_login_results.items()):
+        if now - rec["at"] > LOGIN_RESULT_TTL:
+            _login_results.pop(fid, None)
+
+
+async def _stop_login_watchers() -> None:
+    """停掉全部后台捕获并清空会话态（测试隔离用；进程退出时任务随 loop 消亡）。"""
+    tasks = list(_login_watch_tasks)
+    for task in tasks:
+        task.cancel()
+    if tasks:
+        await asyncio.gather(*tasks, return_exceptions=True)
+    _login_watch_tasks.clear()
+    _login_flows.clear()
+    _login_results.clear()
 
 
 @router.post("/login/start")
@@ -239,6 +276,7 @@ async def login_start(payload: dict = Body(default=None)):
         logs.warn("oauth", f"登录初始化失败: {type(err).__name__}: {err}")
         raise HTTPException(502, f"登录初始化失败: {err}") from err
     _login_flows[flow_id] = {"flow": flow, "created": time.time(), "label": label}
+    _start_login_watch(flow_id)
     logs.info("oauth", f"发起登录 flow_id={flow_id} label={label or '-'}")
     return {
         "flow_id": flow_id,
@@ -247,9 +285,28 @@ async def login_start(payload: dict = Body(default=None)):
     }
 
 
+@router.post("/login/cancel")
+async def login_cancel(payload: dict = Body(default=None)):
+    """放弃一次授权：会话与已捕获的结果一并丢弃，后台 watcher 自己收尾。
+
+    捕获搬到服务端后，取消必须真的取消 —— 用户点了「取消本次授权」，就算他
+    还在先前打开的授权页上按了同意，凭证也不该悄悄落进池子里。
+    """
+    flow_id = str((payload or {}).get("flow_id") or "")
+    dropped = _login_flows.pop(flow_id, None) is not None
+    dropped = (_login_results.pop(flow_id, None) is not None) or dropped
+    if dropped:
+        logs.info("oauth", f"授权已取消 flow_id={flow_id}")
+    return {"ok": True}
+
+
 @router.get("/login/poll/{flow_id}")
 async def login_poll(flow_id: str):
-    """轮询授权状态；JWT 入池后立即 ready，API Key 兑换/刷新在后台回填。
+    """读授权进展；后台捕获已出结果就直接交给页面，否则顺手替它问一次上游。
+
+    上游轮询由 _login_watch 负责，页面不再是捕获的唯一驱动 —— 刷新页面、
+    切页签、换设备都不会让已完成的授权捞不回来。
+    结果取走即消费，所以第二次 poll 回到 expired（并发/重复 poll 不会重入兑换链）。
 
     返回 status ∈ pending / ready / failed / expired。
     failed 附带 message（上游拒绝原因）；expired 表示会话超时需重新发起；
@@ -257,10 +314,28 @@ async def login_poll(flow_id: str):
     官方 poll HTTP 4xx 视为终态 failed；5xx/网络抖动保持 pending 并打日志。
     """
     _login_gc()
+    captured = _login_results.pop(flow_id, None)
+    if captured:
+        return captured["payload"]
     entry = _login_flows.get(flow_id)
     if not entry:
         return {"status": "expired"}
-    flow = entry["flow"]
+    kind, payload = await _ask_upstream(flow_id, entry)
+    if kind == "terminal":
+        return payload
+    if kind == "ready":
+        return await _collect_credential(flow_id, entry, payload)
+    return {"status": "pending"}
+
+
+async def _ask_upstream(flow_id: str, entry: dict) -> tuple[str, dict]:
+    """向上游问一次这个 flow 的进展。
+
+    ('pending', {}) 暂时没结果（含 5xx 与网络抖动）；
+    ('terminal', payload) 出终态且会话已摘除；
+    ('ready', data) 上游已就绪但凭证还没捞，交给 _collect_credential。
+    """
+    flow: ZaiAuthFlow = entry["flow"]
     try:
         data = await flow.poll(flow_id)
     except httpx.HTTPStatusError as err:
@@ -276,25 +351,30 @@ async def login_poll(flow_id: str):
                 body_code = None
             if body_code == 3004:
                 logs.info("oauth", f"授权会话过期 flow_id={flow_id}（上游 3004）")
-                return {"status": "expired", "message": "授权会话已过期，请重新生成授权链接"}
-            return {"status": "failed", "message": f"上游拒绝轮询（HTTP {code}）"}
-        return {"status": "pending"}
+                return "terminal", {"status": "expired", "message": "授权会话已过期，请重新生成授权链接"}
+            return "terminal", {"status": "failed", "message": f"上游拒绝轮询（HTTP {code}）"}
+        return "pending", {}
     except Exception as err:  # noqa: BLE001 - 单次网络抖动按 pending 处理
         logs.warn("oauth", f"poll {flow_id} 抖动: {type(err).__name__}")
-        return {"status": "pending"}
+        return "pending", {}
 
     state = data.get("status")
     if state == "failed":
         _login_flows.pop(flow_id, None)
         reason = (data.get("message") or data.get("reason") or "授权失败或被拒绝")
         logs.warn("oauth", f"授权失败 flow_id={flow_id}: {reason}")
-        return {"status": "failed", "message": str(reason)}
+        return "terminal", {"status": "failed", "message": str(reason)}
     if state != "ready":
-        return {"status": "pending"}
+        return "pending", {}
+    return "ready", data
 
+
+async def _collect_credential(flow_id: str, entry: dict, data: dict) -> dict:
+    """把已就绪的授权结果捞成池内账号。"""
     # 会话先摘除再入池：并发/重复 poll 不会再进入兑换链。
     _login_flows.pop(flow_id, None)
 
+    flow: ZaiAuthFlow = entry["flow"]
     # JWT 先入池并立刻 ready；兑换 API Key / 额度刷新改后台，避免卡住前端下一轮 poll。
     zcode_jwt = data.get("token")
     access_token = (data.get("zai") or {}).get("access_token")
@@ -321,6 +401,35 @@ async def login_poll(flow_id: str):
     _schedule_login_followup(account, flow, access_token if zcode_jwt else None)
     logs.info("oauth", f"授权成功入池 {account.name} ({account.id}) mode={account.mode}")
     return {"status": "ready", "account": account.public_view()}
+
+
+def _start_login_watch(flow_id: str) -> None:
+    task = asyncio.create_task(_login_watch(flow_id))
+    _login_watch_tasks.add(task)
+    task.add_done_callback(_login_watch_tasks.discard)
+
+
+async def _login_watch(flow_id: str) -> None:
+    """后台捕获：不依赖页面活着，出终态就把结果存起来等页面读。"""
+    while True:
+        await asyncio.sleep(LOGIN_WATCH_INTERVAL)
+        entry = _login_flows.get(flow_id)
+        if entry is None:  # 结果已被页面取走 / 会话被摘除或 GC
+            return
+        if time.time() - entry["created"] > LOGIN_FLOW_TTL:
+            _login_flows.pop(flow_id, None)
+            logs.warn("oauth", f"授权会话超时未捕获 flow_id={flow_id}")
+            _login_results[flow_id] = {
+                "payload": {"status": "expired", "message": "授权会话已过期，请重新生成授权链接"},
+                "at": time.time(),
+            }
+            return
+        kind, payload = await _ask_upstream(flow_id, entry)
+        if kind == "pending":
+            continue
+        result = payload if kind == "terminal" else await _collect_credential(flow_id, entry, payload)
+        _login_results[flow_id] = {"payload": result, "at": time.time()}
+        return
 
 
 # ── 额度领取 ─────────────────────────────────────────────────────────────────
@@ -552,22 +661,74 @@ def _mask_secret(value: str) -> str:
     return f"{value[:4]}…{value[-4:]}"
 
 
+def _is_mask_echo(value) -> bool:
+    """前端把掩码原样回填回来时，等于没改 —— 不能把 •••• 存成口令。"""
+    text = str(value or "")
+    return "…" in text or text == "••••"
+
+
+#: 系统参数改动的活动日志标签；没列出的字段不记
+_SETTING_LABELS = {
+    "admin_key": "后台口令",
+    "quota_refresh_interval": "额度刷新间隔",
+    "account_concurrency": "账号并发",
+    "claim_round_interval": "自动领取轮间隔",
+    "model_whitelist_mode": "白名单模式",
+    "model_whitelist_names": "白名单名单",
+    "pricing_pull_interval": "定价拉取间隔",
+    "pricing_models": "计价覆盖",
+}
+
+
 @router.get("/settings")
 async def get_settings():
     from .. import settings as app_settings
 
     admin_key = store.admin_key()
-    gateway_key = store.gateway_key()
     return {
         "admin_key_set": bool(admin_key),
         "admin_key_masked": _mask_secret(admin_key),
         "admin_key_is_default": bool(admin_key) and admin_key == app_settings.DEFAULT_ADMIN_KEY,
-        "gateway_key_set": bool(gateway_key),
-        "gateway_key_masked": _mask_secret(gateway_key),
         "quota_refresh_interval": store.quota_refresh_interval(),
         "account_concurrency": store.account_concurrency(),
         "claim_round_interval": store.claim_round_interval(),
+        "model_whitelist_mode": store.model_whitelist_mode(),
+        "whitelist_modes": list(app_settings.WHITELIST_MODES),
+        "model_whitelist_names": store.model_whitelist_names_text(),
+        # 当前真正放行的名单（含回落后的结果），界面用它显示「现在外面能打什么」
+        "model_whitelist_effective": model_access.allowed(),
+        # 上游实际提供的模型（能力层，与白名单策略无关）：后台芯片墙用它，
+        # 免得手填 1 个名字就被显示成「上游只有 1 个模型」
+        "model_capability": model_access.capability_models(),
+        "pricing_pull_interval": store.pricing_pull_interval(),
+        "pricing_overrides": store.pricing_overrides(),
     }
+
+
+@router.get("/pricing")
+async def get_pricing():
+    """当前生效计价表（三层合并结果）+ 每模型溯源 + 拉取状态。"""
+    table = pricing.effective_table(store.pricing_overrides(), store.pricing_pulled())
+    return {
+        "models": {name: {**item.to_dict(), "source": item.source} for name, item in table.items()},
+        "ticks_per_yuan": pricing.TICKS_PER_YUAN,
+        "source_url": constants.PRICING_SOURCE_URL,
+        "builtin_as_of": constants.PRICING_AS_OF,
+        "pull_status": store.pricing_pull_status(),
+        "pull_interval": store.pricing_pull_interval(),
+        "admin_overrides_active": bool(store.pricing_overrides().get("models")),
+    }
+
+
+@router.post("/pricing/pull")
+async def pull_pricing():
+    """手动拉一次官方定价页（后台「立即拉取」按钮）。
+
+    这条路径会出网，所以它只读公开文档站、不带任何账号身份；失败一律 fail-open，
+    保留上一份拉取值，绝不清空计价层。
+    """
+    status = await pricing_pull.pull_once()
+    return {"status": status, "models": len(store.pricing_pulled().get("models") or {})}
 
 
 @router.put("/settings")
@@ -576,16 +737,8 @@ async def update_settings(payload: dict = Body(...)):
         key = (payload["admin_key"] or "").strip()
         if not key:
             raise HTTPException(400, "后台密钥不能为空")
-        if "…" in key or key == "••••":
-            pass  # 前端回填的掩码，不改密
-        else:
+        if not _is_mask_echo(key):
             store.set_setting("admin_key", key)
-    if "gateway_key" in payload:
-        key = (payload["gateway_key"] or "").strip()
-        if "…" in key or key == "••••":
-            pass
-        else:
-            store.set_setting("gateway_key", key)
     if "quota_refresh_interval" in payload:
         try:
             interval = max(0, int(payload["quota_refresh_interval"]))
@@ -604,7 +757,93 @@ async def update_settings(payload: dict = Body(...)):
         except (TypeError, ValueError):
             raise HTTPException(400, "自动领取轮间隔必须是非负整数（0 = 关闭）") from None
         store.set_setting("claim_round_interval", str(interval))
+    if "model_whitelist_mode" in payload:
+        from .. import settings as app_settings
+
+        mode = str(payload["model_whitelist_mode"] or "").strip().lower()
+        if mode not in app_settings.WHITELIST_MODES:
+            raise HTTPException(400, f"白名单模式必须是 {'/'.join(app_settings.WHITELIST_MODES)}")
+        store.set_model_whitelist_mode(mode)
+    if "model_whitelist_names" in payload:
+        raw = payload["model_whitelist_names"]
+        if isinstance(raw, list):
+            text = "\n".join(str(x) for x in raw)
+        elif raw is None:
+            text = ""
+        elif isinstance(raw, str):
+            text = raw
+        else:
+            raise HTTPException(400, "模型名单要么是字符串（换行分隔）要么是列表")
+        store.set_model_whitelist_names(text)
+        if not model_access.parse_names(text) and store.model_whitelist_mode() == "manual":
+            # manual 下空名单不做早退拦截 —— 那是「还没填」，不是「什么都不许打」；
+            # 不写这行日志，清空名单的人会以为白名单关了，然后被 400 莫名其妙
+            logs.warn("admin", "manual 模式名单为空：/v1/models 回落内置名单显示，且不拦截任何模型名")
+    if "pricing_pull_interval" in payload:
+        try:
+            interval = max(0, int(payload["pricing_pull_interval"]))
+        except (TypeError, ValueError):
+            raise HTTPException(400, "定价拉取间隔必须是非负整数（0 = 关闭）") from None
+        store.set_setting("pricing_pull_interval", str(interval))
+    if "pricing_models" in payload:
+        raw = payload["pricing_models"]
+        # 只有真空（None / {} / ""）才是「清除覆盖」；带模型名但结构非法必须报错，
+        # 否则一次笔误会静默把用户改了半年的覆盖表抹掉。
+        blank = raw is None or (isinstance(raw, str) and not raw.strip()) or raw == {}
+        if blank:
+            store.set_pricing_overrides({})   # 清空覆盖 = 回落 builtin/pulled
+        else:
+            if isinstance(raw, str):
+                try:
+                    raw = json.loads(raw)
+                except ValueError:
+                    raise HTTPException(400, "计价表不是合法的 JSON") from None
+            try:
+                store.set_pricing_overrides(pricing.normalize_admin_table(raw))
+            except ValueError as err:
+                raise HTTPException(400, str(err)) from None
+    changed = [_SETTING_LABELS[k] for k in payload if k in _SETTING_LABELS]
+    if "后台口令" in changed and _is_mask_echo(payload.get("admin_key")):
+        changed.remove("后台口令")  # 掩码回显那次提交其实什么都没改
+    if changed:
+        activity.record("config", "修改系统参数：" + "、".join(changed))
+    # 回显生效名单：manual 下填完立刻能看到「现在外面能打什么」，不用刷新整页
+    return {"ok": True, "model_whitelist_effective": model_access.allowed()}
+
+
+# ── 网关 API Key ─────────────────────────────────────────────────────────────
+@router.get("/keys")
+async def list_keys():
+    """列表只有掩码；明文只在 POST 的响应里出现这一次。"""
+    return {"keys": store.api_keys()}
+
+
+@router.post("/keys")
+async def create_key(payload: dict = Body(default={})) -> dict:
+    """生成一把网关 Key。label 可选，用于在用量页区分来源。"""
+    row = store.add_api_key(str(payload.get("label") or ""))
+    activity.record("auth", f"生成网关 Key「{row['label']}」")
+    return {"key": row}
+
+
+@router.delete("/keys/{key_id}")
+async def remove_key(key_id: str) -> dict:
+    labels = {r["id"]: r["label"] for r in store.api_keys()}
+    if not store.delete_api_key(key_id):
+        raise HTTPException(404, "这把 Key 不存在")
+    activity.record("auth", f"删除网关 Key「{labels.get(key_id, key_id)}」")
     return {"ok": True}
+
+
+# ── 活动日志 ─────────────────────────────────────────────────────────────────
+@router.get("/activity")
+async def get_activity(kind: str = "", limit: int = 200) -> dict:
+    return {
+        "entries": store.activity_list(kind, limit),
+        "total": store.activity_total(),
+        "keep": ACTIVITY_KEEP,
+        "kinds": [{"kind": k, "label": activity.KIND_LABELS[k]} for k in activity.KINDS],
+    }
 
 
 # ── 导入 / 导出 ─────────────────────────────────────────────────────────────
@@ -623,14 +862,21 @@ async def import_accounts(payload: dict = Body(...)):
         _schedule_install(acc)
         if acc.mode == "jwt":
             _schedule_auto_claim(acc)
+    if imported:
+        activity.record("account", f"导入 {len(imported)} 个账号")
     return {"count": count}
 
 
 # ── 请求监控 ─────────────────────────────────────────────────────────────────
 @router.get("/monitoring")
 async def monitoring():
-    """网关请求环形日志（内存态，重启清零）。前端自行聚合统计。"""
-    return {"entries": reqlog.snapshot(), "keep": reqlog.KEEP}
+    """网关请求环形日志（内存态，重启清零）。前端自行聚合统计。
+
+    ticks_per_yuan 一起给：费用以微元记账，换算比例只有 pricing 知道，
+    让前端抄一份常数迟早和后端算出两个数。
+    """
+    return {"entries": reqlog.snapshot(), "keep": reqlog.KEEP,
+            "ticks_per_yuan": pricing.TICKS_PER_YUAN}
 
 
 @router.post("/monitoring/clear")

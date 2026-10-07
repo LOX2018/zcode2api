@@ -30,7 +30,7 @@
 |----|------|------|------|
 | INT-020 | .zsb 导入→服务 | zsw 生成向量包导入 → 池内账号即刻可服务请求 | 互通即用 |
 | INT-021 | 导出→再导入 | 导出全池 → 清库 → 导入 → 请求分布与原池一致 | 往返等价 |
-| INT-022 | OAuth 后台化登录 | admin API `/login/start` → 模拟授权回调 → `/login/poll/{fid}` 返回 ready → 池新增；重复 poll 得 `{"status":"expired"}`（会话已摘除，不重入兑换链）；未知/超时 flow_id 同样 expired | UI 流程可用 |
+| INT-022 | OAuth 后台化登录 | admin API `/login/start` → 模拟授权回调 → `/login/poll/{fid}` 返回 ready → 池新增；重复 poll 得 `{"status":"expired"}`（会话已摘除，不重入兑换链）；未知/超时 flow_id 同样 expired；**页面一次都不 poll，后台 watcher 也须把凭证捞进池**；`/login/cancel` 之后即使上游转 ready 也不入池 | UI 流程可用 |
 
 ### INT-D 验证码
 

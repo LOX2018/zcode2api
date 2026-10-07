@@ -28,15 +28,21 @@ async def _drain_followup() -> None:
 @pytest.mark.integration
 class TestOAuthProtocol:
     @pytest.fixture(autouse=True)
-    async def _reset_mock(self, gateway_client):
+    async def _reset_mock(self, gateway_client, monkeypatch):
+        from app.routes import admin_api
+
         _, mock = gateway_client
         mock.state.oauth_state = "pending"
         mock.state.oauth_poll_status = 200
         mock.state.oauth_poll_body_code = None
         mock.state.oauth_server_poll_token = None
+        # 后台捕获不醒，且用例结束一律摘掉：残留 watcher 会以 1.5s 节奏
+        # 继续往跨用例共享的 mock.calls 里追加 poll，污染其他模块的断言。
+        monkeypatch.setattr(admin_api, "LOGIN_WATCH_INTERVAL", 3600.0)
         yield
         mock.state.oauth_poll_body_code = None
         mock.state.oauth_server_poll_token = None
+        await admin_api._stop_login_watchers()
         await _drain_followup()
 
     def _last_call(self, mock, suffix: str) -> dict:

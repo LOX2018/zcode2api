@@ -1,0 +1,132 @@
+ZCode Hub 启动包 · 使用说明
+版本 __APP_VERSION__ | 本文件由 packaging/build.ps1 打进安装器
+
+────────────────────────────────────────
+一、装完之后怎么开始
+────────────────────────────────────────
+开始菜单「ZCode Hub」→「ZCode Hub（托盘）」，或双击桌面图标。
+程序以**系统托盘图标**方式运行：没有黑色窗口，也不会因为误点窗口右上角而把
+服务带走。托盘图标右键菜单：
+  打开管理后台（双击图标即触发）
+  启动服务 / 重启服务 / 停止服务
+  打开日志
+  退出（同时停止服务）
+启动后托盘图标会常驻，服务在后台被托盘程序看护：意外挂掉会自动重启
+（3 分钟内连续失败 3 次则停止重试并在托盘提示，避免无限拉起）。
+若启动前端口上已经有别的方式跑着的服务，托盘只观察、不会去杀它。
+首次启动会自动在安装目录创建 data\accounts.db。
+
+日志：安装目录\data\hub.log（超过 4MB 自动轮转），控制台窗口不再常驻，
+出问题时先看这个文件。
+
+需要前台看日志调试时，用开始菜单里的「ZCode Hub 控制台（调试用，关窗即停服）」。
+
+浏览器访问：
+  后台控制台  http://127.0.0.1:3000/admin/login     登录密码 zcode（随包默认，见第二节）
+  探活        http://127.0.0.1:3000/meta
+
+API 端点（给 Claude Code / Cline / Chatbox 等客户端用）：
+  POST http://<机器IP>:3000/v1/messages              Anthropic Messages 协议
+  POST http://<机器IP>:3000/v1/chat/completions      OpenAI Chat Completions 协议
+  GET  http://<机器IP>:3000/v1/models                模型列表
+
+命令行（在安装目录打开 cmd，全部子命令都走同一个 exe）：
+  ZCodeHub.exe serve [--port 3000] [--open-browser]   启动网关 + 后台
+  ZCodeHub.exe status                                 配置与随包资源自检
+  ZCodeHub.exe login zai                              OAuth 登录并自动入池
+  ZCodeHub.exe add-account zai <名字> <jwt|key>       手动加入凭证
+  ZCodeHub.exe accounts / quota / export / import     账号管理
+  ZCodeHub.exe set-admin-key <新密码>                 改后台密码
+
+────────────────────────────────────────
+二、必改的配置：安装目录下的 .env
+────────────────────────────────────────
+ZCODE_ADMIN_KEY=zcode           ← 随包默认后台密码（登录只需密码，没有用户名）；
+                                 只本机用可以先不改，开放局域网前务必换成强密码
+ZCODE_PORT=3000                ← 端口被占用时改这里
+ZCODE_HOST=127.0.0.1           ← 包里默认只监听本机；要给局域网其他设备用才改 0.0.0.0，
+                                 改之前务必先设强密码（ZCODE_ADMIN_KEY / 网关 API Key）
+ZCODE_DATA_DIR=data            ← 相对路径按「exe 所在目录」解析，不是当前目录
+
+改完 .env 需要重启服务：托盘右键 →「重启服务」（不是关窗口）。
+注意：后台密码只在「数据库里还没有密码」时取 .env 的值；已经启动过一次之后
+以数据库为准，改密码请用 ZCodeHub.exe set-admin-key <新密码>。
+
+────────────────────────────────────────
+三、依赖：需要装什么
+────────────────────────────────────────
+不需要 Python，不需要源码，不需要 npm install —— 这些都已冻结/随包。
+
+需要 Node.js：JWT 模式的阿里云无痕验证码由 captcha_node\solver_pw.js 求解，
+它调用系统里的 node。没有装 Node 时，网关本身照常启动、API Key 通道照常可用，
+只是「自动领取套餐」和 JWT 账号的取 token 环节不可用。
+  下载：https://nodejs.org/zh-cn （本机验证过 v24）
+装好后可用 ZCodeHub.exe status 查看是否识别到；node 不在 PATH 时，
+在 .env 里填 ZCODE_NODE_PATH=C:\完整路径\node.exe。
+
+需要 Chrome 或 Edge：solver_pw.js 会用真浏览器跑验证码。程序自动按
+Program Files / Program Files (x86) / LOCALAPPDATA 顺序探测
+chrome.exe 与 msedge.exe，Win10/11 自带的 Edge 即满足，无需额外安装。
+探测结果在 ZCodeHub.exe status 的「浏览器」一行；若显示「未探测到」，
+在 .env 里填 ZCODE_CHROMIUM_PATH=<浏览器可执行文件完整路径>。
+
+出网要求：验证码页 captcha_node\page.html 从阿里云 CDN
+（o.alicdn.com）加载官方 SDK，求解阶段必须能访问公网。
+
+────────────────────────────────────────
+四、数据在哪、怎么迁移
+────────────────────────────────────────
+安装目录\data\
+  accounts.db        账号、凭证、后台密码、网关 API Key、用量记录（SQLite）
+  accounts.db-wal/-shm  运行期临时文件，正常现象
+  device_mid         本机设备指纹
+
+换机器：先用「ZCodeHub.exe export accounts.json」导出，新机器
+「ZCodeHub.exe import accounts.json」导入；或者整个 data\ 目录拷过去
+（拷之前先停服务，避免带走半截 WAL）。
+
+────────────────────────────────────────
+五、卸载
+────────────────────────────────────────
+先在托盘右键「退出（同时停止服务）」，再走 控制面板 →「ZCode Hub」→ 卸载。
+若忘了退出，安装器会提示「有程序正在使用文件」并给关闭选项。
+卸载器会删掉程序文件，但**保留 data\ 目录**（里面有你的账号凭证），避免误删。
+勾选过「登录后自动启动」的话，卸载会一并清掉那条开机启动项。
+确认不要了请手工删除整个安装目录。
+
+────────────────────────────────────────
+六、两点如实说明
+────────────────────────────────────────
+1) 「不含源码」的边界：Python 部分已编译进 ZCodeHub.exe，包内没有 .py；
+   但 frontend\ 下的 HTML/JS 与 captcha_node\ 下的 solver_pw.js、node_modules\
+   仍是磁盘上的明文——浏览器静态资源和 Node 子进程必须读真实文件，无法编进 exe。
+   需要这些也不可读，得另行做 JS 混淆打包。
+
+2) 本项目 license 为 AGPL-3.0-only。自己换机使用无碍；若把这个安装包分发给
+   他人（尤其是对外提供 API 服务），AGPL 要求同时提供对应源码的获取途径。
+
+3) 本包验证过：exe 路径锚定、托盘无窗口常驻、服务崩溃后自动重启、端口被外部实例
+   占用时只观察不接管、日志落 data\hub.log（无 ANSI 转义码）、后台页与静态资源、
+   鉴权链路、CLI 各子命令。
+   **未验证**：JWT 模式真实过码到领取成功的端到端流程（需要有效账号与出网环境）；
+   托盘菜单的按钮（启动/重启/停止/退出）无法脚本化点击，需你第一次用时顺手点一下。
+
+────────────────────────────────────────
+七、出问题先看这里
+────────────────────────────────────────
+先看日志：托盘右键「打开日志」，或直接看 安装目录\data\hub.log。
+
+托盘图标没出现 → 托盘程序本身没起来。在安装目录用 cmd 跑一次
+                ZCodeHubTray.exe 看有没有报错（无窗口版本不会打印，
+                此时改用「ZCode Hub 控制台」直接跑 ZCodeHub.exe serve 看输出）。
+端口被占用 → data\hub.log 里会报 address already in use，改 .env 的 ZCODE_PORT。
+                注意：如果 3000 端口上已经有另一套手动起的服务，托盘会进入
+                「只观察不接管」状态，不会去杀它；这种情况只保留一个实例。
+服务反复起不来 → 托盘在 3 分钟内连续失败 3 次会停止自动重启并在托盘提示，
+                原因写在 data\hub.log 末尾。
+后台登不进去 → ZCodeHub.exe status 看「后台密码」是否已设置；
+                没设过就在 .env 填 ZCODE_ADMIN_KEY 后重启，
+                设过了用 ZCodeHub.exe set-admin-key <新密码>。
+页面空白 / 样式丢失 → status 里「前端」一行应显示 OK 且路径指向安装目录的
+                frontend\；被误删就重装，或把 frontend\ 放回 exe 同级。
+JWT 账号一直 429/无 token → status 看「浏览器」「求解器」两行是否都 OK。

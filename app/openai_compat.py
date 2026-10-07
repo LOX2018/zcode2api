@@ -30,6 +30,18 @@ def _as_int(value: object) -> int | None:
         return None
 
 
+def _prompt_total(usage: dict) -> int | None:
+    """Anthropic 把输入拆成「新输入 + 缓存读 + 缓存写」三段，OpenAI 的 prompt_tokens 是总和。
+
+    三段都没给 → None（未知）；给了任意一段就按已知总和算，缺的当 0。
+    """
+    parts = [_as_int(usage.get(k)) for k in
+             ("input_tokens", "cache_read_input_tokens", "cache_creation_input_tokens")]
+    if all(p is None for p in parts):
+        return None
+    return sum(p or 0 for p in parts)
+
+
 def _text_from_content(content: object) -> str:
     """OpenAI content（str | 分块数组）→ 纯文本。"""
     if isinstance(content, str):
@@ -202,11 +214,16 @@ def anthropic_to_openai(data: dict, model: str) -> dict:
                 },
             })
     usage = data.get("usage") or {}
-    in_tok = _as_int(usage.get("input_tokens")) or 0
+    in_tok = _prompt_total(usage) or 0
     out_tok = _as_int(usage.get("output_tokens")) or 0
+    cached = _as_int(usage.get("cache_read_input_tokens")) or 0
     message: dict = {"role": "assistant", "content": "".join(text_parts) or None}
     if tool_calls:
         message["tool_calls"] = tool_calls
+    openai_usage: dict = {"prompt_tokens": in_tok, "completion_tokens": out_tok,
+                          "total_tokens": in_tok + out_tok}
+    if cached:
+        openai_usage["prompt_tokens_details"] = {"cached_tokens": cached}
     return {
         "id": str(data.get("id") or f"chatcmpl-{uuid.uuid4().hex[:24]}"),
         "object": "chat.completion",
@@ -217,7 +234,7 @@ def anthropic_to_openai(data: dict, model: str) -> dict:
             "message": message,
             "finish_reason": _STOP_REASON_MAP.get(data.get("stop_reason"), "stop"),
         }],
-        "usage": {"prompt_tokens": in_tok, "completion_tokens": out_tok, "total_tokens": in_tok + out_tok},
+        "usage": openai_usage,
     }
 
 
@@ -235,7 +252,17 @@ class StreamConverter:
         self.finish_reason: str | None = None
         # None = 上游未上报（未知），0 = 真实为零；两者语义不同
         self.usage = {"prompt_tokens": None, "completion_tokens": None, "total_tokens": None}
+        # 上游原始 usage（Anthropic 口径）：缓存命中等字段不属于 OpenAI 结构，
+        # 但网关的监控与计费要知道，所以单独留一份
+        self.anthropic_usage: dict = {}
         self._tool_seq = 0
+
+    def _merge_usage(self, raw: object) -> None:
+        if not isinstance(raw, dict):
+            return
+        for key, value in raw.items():
+            if value is not None:
+                self.anthropic_usage[key] = value
 
     def _sync_usage_total(self) -> None:
         p, c = self.usage["prompt_tokens"], self.usage["completion_tokens"]
@@ -254,7 +281,8 @@ class StreamConverter:
             if msg.get("id"):
                 self.chunk_id = str(msg["id"])
             u = msg.get("usage") or {}
-            prompt = _as_int(u.get("input_tokens"))
+            self._merge_usage(u)
+            prompt = _prompt_total(self.anthropic_usage)
             if prompt is not None:
                 self.usage["prompt_tokens"] = prompt
                 self._sync_usage_total()
@@ -284,6 +312,7 @@ class StreamConverter:
         if etype == "message_delta":
             delta = evt.get("delta") or {}
             self.finish_reason = _STOP_REASON_MAP.get(delta.get("stop_reason"), "stop")
+            self._merge_usage(evt.get("usage"))
             out = _as_int((evt.get("usage") or {}).get("output_tokens"))
             if out is not None:
                 self.usage["completion_tokens"] = out
@@ -301,5 +330,12 @@ class StreamConverter:
             "choices": [{"index": 0, "delta": delta, "finish_reason": finish_reason}],
         }
         if finish_reason is not None:
-            payload["usage"] = dict(self.usage)
+            payload["usage"] = self._usage_payload()
         return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
+
+    def _usage_payload(self) -> dict:
+        out = dict(self.usage)
+        cached = _as_int(self.anthropic_usage.get("cache_read_input_tokens"))
+        if cached:
+            out["prompt_tokens_details"] = {"cached_tokens": cached}
+        return out

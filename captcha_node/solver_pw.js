@@ -46,9 +46,33 @@ if (memAvailableMB() < 500) {
 }
 
 // ── Chromium 定位：env 优先，其次常见路径 ────────────────────────────────────
+// Windows 上 X_OK 语义不可靠，只判存在；其余平台沿用可执行位判定。
+const browserUsable = (p) => {
+  try {
+    fs.accessSync(p, process.platform === "win32" ? fs.constants.F_OK : fs.constants.X_OK);
+    return true;
+  } catch {
+    return false;
+  }
+};
+
+function winBrowsers(envKey) {
+  const base = process.env[envKey];
+  if (!base) return [];
+  const join = (rel) => path.join(base, ...rel);
+  return [
+    join(["Google", "Chrome", "Application", "chrome.exe"]),
+    join(["Microsoft", "Edge", "Application", "msedge.exe"]),
+  ];
+}
+
 function findChromium() {
   const candidates = [
     process.env.ZCODE_CHROMIUM_PATH,
+    ...winBrowsers("ProgramFiles"),
+    ...winBrowsers("ProgramFiles(x86)"),
+    ...winBrowsers("LOCALAPPDATA"),
+    "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
     "/usr/local/bin/chromium",
     "/usr/local/bin/google-chrome",
     "/usr/bin/chromium",
@@ -56,7 +80,7 @@ function findChromium() {
     "/usr/bin/google-chrome",
   ].filter(Boolean);
   for (const c of candidates) {
-    try { fs.accessSync(c, fs.constants.X_OK); return c; } catch { /* next */ }
+    if (browserUsable(c)) return c;
   }
   return null;
 }

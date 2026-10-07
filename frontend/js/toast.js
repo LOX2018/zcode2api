@@ -1,7 +1,7 @@
 /* Toast 通知 */
 function _toastContainer(){
   let c=document.getElementById('toast-container');
-  if(!c){c=document.createElement('div');c.id='toast-container';c.className='toast-container';document.body.appendChild(c);}
+  if(!c){c=document.createElement('div');c.id='toast-container';c.className='toast-container';c.setAttribute('role','status');c.setAttribute('aria-live','polite');document.body.appendChild(c);}
   return c;
 }
 function _esc(s){return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}

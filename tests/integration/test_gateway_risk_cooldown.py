@@ -590,7 +590,9 @@ class TestBillingRefreshDebounce:
         from tests.conftest import seed_account
 
         seed_account(fresh_app, _GOOD_JWT, name="a-deb")
-        body = {"model": "GLM-5.2", "messages": [{"role": "user", "content": "hi"}]}
+        # GLM-5.3 在 Mock 权益集内：首刷成功后白名单已知集非空，此后再请求
+        # 权益外的模型会被早退拦截（400），就不是在测去抖了
+        body = {"model": "GLM-5.3", "messages": [{"role": "user", "content": "hi"}]}
 
         before = len(mock.state.calls)
         res1 = await client.post("/v1/messages", json=body)

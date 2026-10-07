@@ -2,7 +2,7 @@
 
 状态：与 2.5.11 实现对齐。对外网关只有 Anthropic Messages、OpenAI Chat Completions、`/v1/models`；**没有** `/v1/responses`。
 
-所有管理端点挂 `/admin/api/*`，需 `Authorization: Bearer <后台密码>`（连续失败达上限后 429 锁 5 分钟）；网关端点按「网关 Key」配置可选鉴权（`Authorization: Bearer` 或 `x-api-key`，未配置即放行——生产必须配置）。
+所有管理端点挂 `/admin/api/*`，需 `Authorization: Bearer <后台密码>`（连续失败达上限后 429 锁 5 分钟）；网关端点按 `api_keys` 表可选鉴权（`Authorization: Bearer` 或 `x-api-key`，表空即放行——生产务必生成一把）。
 
 ## 1. 网关端点（对外）
 
@@ -57,14 +57,15 @@
 | `POST /admin/api/accounts/refresh` | `{all?}` 或 `{ids}` 批量刷新额度（冷却/失效跳过 billing） |
 | `POST /admin/api/accounts/{id}/refresh` | 立即刷新该账号额度 |
 | `POST /admin/api/accounts/{id}/fingerprint/rotate` | 换发客户端指纹（下一套成套桌面 SKU + 新 device_mid） |
-| `GET /admin/api/status` | provider 列表 + 网关 key 是否已配置 + 可选账号计数 |
+| `GET /admin/api/status` | provider 列表 + `gateway_keys`（网关 Key 把数）+ 可选账号计数 |
 
 ### 凭证与登录
 
 | 方法/路径 | 说明 |
 |-----------|------|
-| `POST /admin/api/login/start` | `{label?}` → `{flow_id, authorize_url, expires_in:300}`（zai server-mediated；前端展示链接，`label` 作账号名入池） |
-| `GET /admin/api/login/poll/{flow_id}` | 轮询：`{status}` ∈ `pending`/`ready`/`failed`/`expired`；`failed` 附 `message`；`ready` 附 `account`（JWT 已入池；API Key 兑换/额度刷新后台回填）。官方 poll HTTP 4xx → `failed` 并摘会话；5xx/网络抖动 → `pending` 并打日志。ready/失败后或未知/超时 flow_id 一律 `expired`（会话一次性，防重入兑换链） |
+| `POST /admin/api/login/start` | `{label?}` → `{flow_id, authorize_url, expires_in:300}`（zai server-mediated；前端展示链接，`label` 作账号名入池）。发起即由服务端后台按 1.5s 捕获，不依赖页面存活 |
+| `POST /admin/api/login/cancel` | `{flow_id}` → `{ok:true}`；丢弃会话与已捕获结果，后台 watcher 随即收尾（取消后再点同意也不会入池） |
+| `GET /admin/api/login/poll/{flow_id}` | 读捕获结果：`{status}` ∈ `pending`/`ready`/`failed`/`expired`；`failed` 附 `message`；`ready` 附 `account`（JWT 已入池；API Key 兑换/额度刷新后台回填）。后台先捕获时结果等页面来取（180s 窗）；页面没问到则由本次请求顺手替它问一次上游。官方 poll HTTP 4xx → `failed` 并摘会话；5xx/网络抖动 → `pending` 并打日志。结果取走即消费，第二次 poll 与未知/超时 flow_id 一律 `expired`（会话一次性，防重入兑换链） |
 
 ### 凭证导入 / 导出
 
@@ -88,8 +89,12 @@
 |-----------|------|
 | `GET /admin/api/monitoring` | 内存环形请求日志（最新在前，KEEP=500，重启清零） |
 | `POST /admin/api/monitoring/clear` | 清空监控 |
-| `GET /admin/api/settings` | 不回明文密钥。返回 `admin_key_set` / `admin_key_masked` / `admin_key_is_default`、`gateway_key_set` / `gateway_key_masked`、`quota_refresh_interval`、`account_concurrency` |
-| `PUT /admin/api/settings` | 改密钥、刷新间隔、并发上限（改后即生效，落 meta 表；并发 0 = 不限）。前端回填的掩码（含 `…` 或 `••••`）忽略不覆盖；网关 key 传空字符串表示关闭校验 |
+| `GET /admin/api/settings` | 不回明文密钥。返回 `admin_key_set` / `admin_key_masked` / `admin_key_is_default`、`quota_refresh_interval`、`account_concurrency` |
+| `PUT /admin/api/settings` | 改后台口令、刷新间隔、并发上限（改后即生效，落 meta 表；并发 0 = 不限）。前端回填的掩码（含 `…` 或 `••••`）忽略不覆盖 |
+| `GET /admin/api/keys` | 网关 Key 列表：`{id, label, masked, created_at}`，完整串不回传 |
+| `POST /admin/api/keys` | `{label?}` 生成一把 `sk-<40hex>`；完整明文只在本响应里出现一次 |
+| `DELETE /admin/api/keys/{id}` | 删除；表空即回到不校验 |
+| `GET /admin/api/activity` | `?kind=&limit=200` → `{entries, total, keep, kinds}`；活动日志落库，重启不清零，满 2000 条丢最旧 |
 
 ### 探活
 

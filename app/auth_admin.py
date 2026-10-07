@@ -89,15 +89,21 @@ async def verify_admin_key(
 
 
 async def verify_gateway_key(
+    request: Request,
     authorization: str | None = Header(default=None),
     x_api_key: str | None = Header(default=None, alias="x-api-key"),
 ) -> None:
-    """校验 /v1/messages 网关访问密钥（未配置则放行）。"""
-    key = store.gateway_key()
-    if not key:
+    """校验 /v1 网关访问密钥：命中后台生成的任意一把即放行。
+
+    一把 Key 都没生成时保持开放（和历史上「未配置即不校验」一致）；
+    命中后把 id/label 挂到 request.state，供 reqlog 按 Key 归因用量。
+    """
+    if not store.api_keys():
         return
     token = _extract_bearer(authorization) or x_api_key
     if token is None:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "缺少 API Key")
-    if not hmac.compare_digest(token, key):
+    matched = store.match_api_key(token)
+    if matched is None:
         raise HTTPException(status.HTTP_403_FORBIDDEN, "API Key 无效")
+    request.state.gateway_key = matched

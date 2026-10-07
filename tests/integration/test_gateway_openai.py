@@ -140,14 +140,10 @@ class TestChatCompletions:
 
     async def test_gateway_key_required(self, gateway_client, fresh_app):
         client, _ = gateway_client
-        fresh_app.set_setting("gateway_key", "sk-gw-test")
-        try:
-            res = await client.post("/v1/chat/completions",
-                                    json={"model": "glm-5.3", "messages": [{"role": "user", "content": "hi"}]})
-            assert res.status_code == 401
-            res = await client.post("/v1/chat/completions",
-                                    headers={"x-api-key": "sk-gw-test"},
-                                    json={"model": "glm-5.3", "messages": [{"role": "user", "content": "hi"}]})
-            assert res.status_code == 503  # 鉴权通过，进入调度（无账号）
-        finally:
-            fresh_app.set_setting("gateway_key", "")
+        row = fresh_app.add_api_key("测试")
+        body = {"model": "glm-5.3", "messages": [{"role": "user", "content": "hi"}]}
+        res = await client.post("/v1/chat/completions", json=body)
+        assert res.status_code == 401
+        res = await client.post("/v1/chat/completions",
+                                headers={"x-api-key": row["key"]}, json=body)
+        assert res.status_code == 503  # 鉴权通过，进入调度（无账号）

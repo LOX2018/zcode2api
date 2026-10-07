@@ -223,3 +223,44 @@ class TestStreamConverter:
         conv.start()
         assert conv.feed({"type": "ping"}) == []
         assert conv.feed({"type": "content_block_stop", "index": 0}) == []
+
+
+class TestUsageCacheMapping:
+    """Anthropic 把输入拆成三段，OpenAI 的 prompt_tokens 是总和——漏加缓存段会让
+    客户端看到的用量比实际上游账单少，多出来的那部分钱在谁的账上就查不清了。"""
+
+    _CACHED = {"input_tokens": 6, "cache_read_input_tokens": 100,
+               "cache_creation_input_tokens": 40, "output_tokens": 9}
+
+    def test_sync_prompt_includes_cache_and_reports_cached_tokens(self):
+        out = anthropic_to_openai({
+            "type": "message", "model": "GLM-5.3", "content": [], "stop_reason": "end_turn",
+            "usage": self._CACHED,
+        }, "GLM-5.3")
+        assert out["usage"]["prompt_tokens"] == 146
+        assert out["usage"]["total_tokens"] == 155
+        assert out["usage"]["prompt_tokens_details"] == {"cached_tokens": 100}
+
+    def test_sync_without_cache_omits_details(self):
+        out = anthropic_to_openai({
+            "type": "message", "model": "GLM-5.3", "content": [],
+            "usage": {"input_tokens": 1, "output_tokens": 1},
+        }, "GLM-5.3")
+        assert "prompt_tokens_details" not in out["usage"]
+
+    def test_stream_keeps_raw_anthropic_usage_for_billing(self):
+        conv = StreamConverter("GLM-5.3")
+        conv.start()
+        conv.feed({"type": "message_start", "message": {"usage": self._CACHED}})
+        conv.feed({"type": "message_delta", "delta": {"stop_reason": "end_turn"},
+                   "usage": {"output_tokens": 9}})
+        # 网关计费吃的是 Anthropic 原始口径，不能被 OpenAI 的合并口径污染
+        assert conv.anthropic_usage["cache_read_input_tokens"] == 100
+        assert conv.anthropic_usage["cache_creation_input_tokens"] == 40
+        chunks = _parse_sse("".join(conv.feed({"type": "message_stop"})))
+        assert chunks == []  # message_stop 不产出 chunk，usage 挂在收尾帧上
+        finish = _parse_sse("".join(conv.feed(
+            {"type": "message_delta", "delta": {"stop_reason": "end_turn"},
+             "usage": {"output_tokens": 9}})))
+        assert finish[0]["usage"]["prompt_tokens"] == 146
+        assert finish[0]["usage"]["prompt_tokens_details"] == {"cached_tokens": 100}

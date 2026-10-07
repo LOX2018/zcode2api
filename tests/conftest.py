@@ -33,6 +33,10 @@ os.environ.setdefault("no_proxy", "*")
 _STORE_BINDING_MODULES = (
     "app.store",
     "app.captcha",
+    "app.activity",
+    "app.model_access",
+    "app.usage",
+    "app.pricing_pull",
     "app.routes.gateway",
     "app.routes.admin_api",
     "app.quota",

@@ -1,9 +1,8 @@
 """网关 API Key 鉴权（auth_admin.verify_gateway_key）。
 
-key 未配置 → 放行（空 key fallback）；已配置 → 无凭证 401 / 错凭证 403 /
+api_keys 表为空 → 放行（空表 fallback）；有 Key → 无凭证 401 / 错凭证 403 /
 `Authorization: Bearer` 与 `x-api-key` 双通道放行。fresh_app 已把全局 store
-重绑到隔离实例，用 store.set_setting 落 key、用例收尾清空还原（顺带覆盖
-set_setting/get_setting 链）。
+重绑到隔离实例，用例直接往表里生成/删除 Key。
 """
 
 from __future__ import annotations
@@ -12,7 +11,6 @@ import pytest
 
 from tests.conftest import seed_account
 
-_GATEWAY_KEY = "sk-test-gateway-0001"
 _MESSAGES_BODY = {"model": "GLM-5.2",
                   "messages": [{"role": "user", "content": "hi"}]}
 # JWT 前缀是 mock 上游按 bind 键控 counters 的依据（session 级共享），
@@ -23,20 +21,20 @@ _AUTH_JWT = "h9.eyJzdWIiOiJhdXRoIn0.sig"
 
 @pytest.fixture
 def gateway_key(fresh_app):
-    """配置网关 key，用例结束清空还原（未配置放行语义）。
+    """生成一把网关 Key，用例结束删干净（空表放行语义还原）。
 
     依赖 fresh_app 保证先重绑全局 store —— 写原始 store 是无效的。
     """
-    fresh_app.set_setting("gateway_key", _GATEWAY_KEY)
-    yield _GATEWAY_KEY
-    fresh_app.set_setting("gateway_key", "")
+    row = fresh_app.add_api_key("测试 Key")
+    yield row["key"]
+    fresh_app.delete_api_key(row["id"])
 
 
 @pytest.mark.integration
 class TestGatewayAuth:
     async def test_no_key_configured_allows_anonymous(self, gateway_client, fresh_app):
         """未配置 key 时保持放行（现有部署的默认形态，回归锁定）。"""
-        assert fresh_app.gateway_key() == ""
+        assert fresh_app.api_keys() == []
         res = await gateway_client[0].post("/v1/messages", json=_MESSAGES_BODY)
         assert res.status_code != 401 and res.status_code != 403
 

@@ -232,6 +232,10 @@ def build_app() -> FastAPI:
         if scenario == "risk_control_3012":
             # 2026-09-05 实测形态：HTTP 405 承载 {"code":3012,"msg":"...unusual activity..."}
             return 405, {"code": 3012, "msg": "request has been blocked due to unusual activity."}, {}
+        if scenario == "model_not_allowed":
+            # 套餐不含该模型：上游回 code 3006（HTTP 400 承载）。这是「号 × 模型」
+            # 的组合事实，账号本身健康，网关应钉该号该模型并换号，而非判故障
+            return 400, {"code": 3006, "msg": "model not allowed"}, {}
         if scenario == "server_error":
             return 500, {"error": "internal"}, {}
         if scenario == "not_found":
@@ -241,8 +245,12 @@ def build_app() -> FastAPI:
         return 200, ok_body, {}
 
     def _sse_stream(chunks: int) -> str:
+        # message_start 带 usage 是真上游的形态（缓存命中也在这里报），
+        # 网关的透传计费就靠它——省略会让 SSE 解析路径在测试里形同不存在
         parts = [
-            'event: message_start\ndata: {"type":"message_start","message":{"role":"assistant"}}\n\n'
+            'event: message_start\ndata: {"type":"message_start","message":{"role":"assistant",'
+            '"usage":{"input_tokens":10,"cache_read_input_tokens":4,'
+            '"cache_creation_input_tokens":2}}}\n\n'
         ]
         for i in range(chunks):
             parts.append(SSE_EVENT.format(text=f"chunk-{i}"))

@@ -1,14 +1,22 @@
-"""日志工具 — ANSI 彩色终端输出 (Windows GBK 兼容)"""
+"""日志工具 — ANSI 彩色终端输出 (Windows GBK 兼容)
 
-_R = "\033[0m"
-_G = "\033[32m"
-_C = "\033[36m"
-_Y = "\033[33m"
-_RED = "\033[31m"
-_DIM = "\033[90m"
-_B = "\033[1m"
-_MAG = "\033[35m"
-_W = "\033[37m"
+设了 NO_COLOR（或被重定向到文件/管道，见 cli.py）时全部退化为纯文本，
+否则托盘托管的 hub.log 里会满是转义码。
+"""
+
+import os
+
+_PLAIN = bool(os.environ.get("NO_COLOR"))
+
+_R = "" if _PLAIN else "\033[0m"
+_G = "" if _PLAIN else "\033[32m"
+_C = "" if _PLAIN else "\033[36m"
+_Y = "" if _PLAIN else "\033[33m"
+_RED = "" if _PLAIN else "\033[31m"
+_DIM = "" if _PLAIN else "\033[90m"
+_B = "" if _PLAIN else "\033[1m"
+_MAG = "" if _PLAIN else "\033[35m"
+_W = "" if _PLAIN else "\033[37m"
 
 
 def ok(module: str, msg: str):

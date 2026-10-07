@@ -21,6 +21,15 @@ build/
 # Node（captcha_node）
 node_modules/
 
+# ── 打包产物（packaging/build.ps1 生成）──
+packaging/dist/
+packaging/work/
+packaging/stage/
+packaging/output/
+packaging/ZCodeHub.bom.iss
+packaging/__pycache__/
+packaging/ZCodeHub.ico
+
 # 秘钥 / 凭证导出
 *accounts*.json
 zcode-accounts*.json

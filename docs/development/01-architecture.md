@@ -150,7 +150,7 @@ claim_round_interval 默认 600s，meta 表可改，0 = 关）：
 
 | 路径 | 流程 |
 |------|------|
-| Web OAuth | `POST /admin/api/login/start` → 浏览器授权官方 callback → `GET login/poll` ready 入池 JWT；API Key 兑换后台回填 |
+| Web OAuth | `POST /admin/api/login/start` → 服务端后台按 1.5s 轮询上游捕获凭证（页面刷新/切页签/换设备都不影响）→ ready 入池 JWT；API Key 兑换后台回填；`POST /login/cancel` 放弃会话 |
 | Web / CLI 粘贴 | `POST /admin/api/accounts` 或 `cli.py add-account`（JWT 或 Key） |
 | JSON 导入 | `GET/POST /admin/api/export|import` 或 `cli.py export/import`（明文 name/mode/secret） |
 

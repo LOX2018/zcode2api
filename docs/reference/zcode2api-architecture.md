@@ -243,8 +243,10 @@ sequenceDiagram
 运行期账号对象常驻内存(保证轮询游标与状态实时性),每次变更同步落库;进程启动时从库读取快照。
 
 ```text
-accounts(  id PK, provider, name, mode, status, enabled, created_at, data JSON )
-meta(      key PK, value )      # admin_key / gateway_key / quota_refresh_interval
+accounts(     id PK, provider, name, mode, status, enabled, created_at, data JSON )
+meta(         key PK, value )      # admin_key / quota_refresh_interval / 计价三层
+api_keys(     id PK, label, key, created_at )        # 网关 Key，后台生成
+activity(     id PK AUTOINCREMENT, ts, kind, text )  # 活动日志，截断 2000 条
 ```
 
 `data` 列以 JSON 存放完整 `Account`(含额度快照、用量、计数器等),
@@ -257,9 +259,9 @@ meta(      key PK, value )      # admin_key / gateway_key / quota_refresh_interv
 | 范围 | 依赖 | 规则 |
 |------|------|------|
 | 后台 `/admin/api/*` | `verify_admin_key` | 必须 `Authorization: Bearer <后台密钥>`(或 `?app_key=` 供 EventSource);`hmac.compare_digest` 定时安全比较 |
-| 网关 `/v1/messages`·`/v1/models` | `verify_gateway_key` | 配置了网关 Key 才校验(`Bearer` 或 `x-api-key`);留空放行 |
+| 网关 `/v1/messages`·`/v1/models` | `verify_gateway_key` | `api_keys` 表非空才校验(`Bearer` 或 `x-api-key`);无凭证 401、Key 不匹配 403、表空放行 |
 
-密钥存于 `meta` 表,可在「设置」页或 `.env` 初始化。前端凭证加密存于浏览器 localStorage。
+后台密钥存于 `meta` 表,可在「设置」页或 `.env` 初始化;网关 Key 存于 `api_keys` 表,只能在「客户端接入」页生成(明文仅创建时回显一次,列表永久脱敏),没有手动填写入口。前端凭证加密存于浏览器 localStorage。
 
 ---
 

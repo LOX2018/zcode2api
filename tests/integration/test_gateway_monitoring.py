@@ -6,6 +6,8 @@ import asyncio
 
 import pytest
 
+from app import pricing
+
 _GOOD_JWT = "hM.eyJzdWIiOiJtIn0.sig"
 _STREAM_JWT = "hS.eyJzdWIiOiJzIn0.sig"      # 流式测试独立 JWT（mock 场景序列按凭证前缀绑定）
 _OAI_STREAM_JWT = "hT.eyJzdWIiOiJ0In0.sig"
@@ -168,10 +170,15 @@ class TestMonitoringRecording:
         assert res.status_code == 200
         assert "message_stop" in res.text  # 流已完整消费
 
-        e = (await client.get("/admin/api/monitoring", headers=ADMIN_AUTH)).json()["entries"][0]
+        body = (await client.get("/admin/api/monitoring", headers=ADMIN_AUTH)).json()
+        # 换算比例由后端给：前端自己抄一份常数，迟早和账本算出两个数
+        assert body["ticks_per_yuan"] == pricing.TICKS_PER_YUAN
+        e = body["entries"][0]
         assert e["ok"] is True and e["stream"] is True
         assert e["t_total"] is not None and e["t_first"] is not None
-        assert e["input_tokens"] is None  # 透传不解析 SSE，未知 ≠ 0
+        assert e["input_tokens"] == 10 and e["output_tokens"] == 5
+        assert e["cache_read_tokens"] == 4 and e["cache_write_tokens"] == 2
+        assert e["cost_currency"] == "CNY" and e["cost_ticks"] > 0
 
     async def test_openai_stream_tokens_recorded(self, gateway_client, fresh_app):
         """OpenAI 流式转换器带 usage（message_delta.output_tokens）→ 记录 completion tokens。"""
@@ -189,7 +196,8 @@ class TestMonitoringRecording:
         e = (await client.get("/admin/api/monitoring", headers=ADMIN_AUTH)).json()["entries"][0]
         assert e["ok"] is True and e["endpoint"] == "chat"
         assert e["output_tokens"] == 5  # mock message_delta 固定 output_tokens=5
-        assert e["input_tokens"] is None  # mock 无 message_start usage → 未知
+        assert e["input_tokens"] == 10  # message_start 的 usage 也被转换器记下了
+        assert e["cache_read_tokens"] == 4
 
     async def test_clear_endpoint(self, gateway_client, fresh_app):
         client, mock = gateway_client
@@ -211,6 +219,11 @@ class TestMonitoringRecording:
 
         app = create_app()
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-            res = await client.get("/admin/monitoring")
+            # 旧的多页入口全部 307 到控制台对应页签，书签不该断
+            for page, tab in (("accounts", "accounts"), ("monitoring", "usage"), ("settings", "system")):
+                res = await client.get(f"/admin/{page}", follow_redirects=False)
+                assert res.status_code == 307, page
+                assert res.headers["location"] == f"/admin/console#{tab}", page
+            res = await client.get("/admin/console")
         assert res.status_code == 200
-        assert "请求监控" in res.text
+        assert "用量与明细" in res.text

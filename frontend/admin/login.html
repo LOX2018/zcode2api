@@ -4,40 +4,89 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>zcode-hub · 登录</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%235b8def' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M12 2 2 7l10 5 10-5-10-5Z'/%3E%3Cpath d='m2 17 10 5 10-5'/%3E%3Cpath d='m2 12 10 5 10-5'/%3E%3C/svg%3E">
   <link href="https://cdn.jsdelivr.net/npm/geist@1.0.0/dist/fonts/geist-sans/style.css" rel="stylesheet">
   <link href="/static/css/app.css?v={{APP_VERSION}}" rel="stylesheet">
 </head>
-<body class="login-body">
-  <div class="login-shell">
-    <div class="login-card">
-      <div class="login-brand">
+<body style="min-height:100vh;display:flex;flex-direction:column;background:var(--bg)">
+  <div class="zh-topbar">
+    <div class="zh-topbar-inner">
+      <span class="zh-brand">
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2 2 7l10 5 10-5-10-5Z"/><path d="m2 17 10 5 10-5"/><path d="m2 12 10 5 10-5"/></svg>
-        <span>Z<span class="tick" style="color:var(--amber)">·</span>HUB</span>
+        <span>Z<span class="tick">·</span>HUB</span>
+      </span>
+      <div class="zh-status">
+        <span class="zh-dot" id="login-dot"></span><span id="login-status">连接中</span>
       </div>
-      <div class="login-title">后台管理</div>
-      <div class="login-subtitle">请输入后台密码以继续</div>
-      <div class="login-form">
-        <input type="password" id="key" placeholder="后台密码" class="input">
-        <button onclick="login()" class="btn btn-primary w-full">继续</button>
+      <span class="admin-header-version" id="login-version"></span>
+    </div>
+  </div>
+
+  <div style="flex:1;display:flex;align-items:center;justify-content:center;padding:24px">
+    <div style="width:min(420px,92vw)">
+      <div class="zh-panel" style="margin:0">
+        <div class="zh-eyebrow">Gateway Console · Access</div>
+        <h1 class="zh-h1">后台登录</h1>
+        <div class="zh-desc">网关控制台：号池、请求监控与设置。请输入后台密码继续。</div>
+        <div class="login-form">
+          <input type="password" id="key" placeholder="后台密码" class="input" autocomplete="current-password">
+          <button id="login-btn" class="btn btn-primary w-full">进入控制台</button>
+        </div>
       </div>
     </div>
   </div>
+
   <script src="/static/js/auth.js?v={{APP_VERSION}}"></script>
   <script src="/static/js/toast.js?v={{APP_VERSION}}"></script>
   <script>
-    const el=document.getElementById('key');
-    el.addEventListener('keypress',e=>{if(e.key==='Enter')login();});
-    async function login(){
-      const key=el.value.trim();
-      if(!key)return;
-      try{
-        if(await verifyKey(ADMIN_API+'/verify',key)){await adminKey.set(key);location.href='/admin/accounts';}
-        else showToast('密码无效','error');
-      }catch{showToast('连接失败','error');}
+    const el = document.getElementById('key');
+    const btn = document.getElementById('login-btn');
+    const dot = document.getElementById('login-dot');
+    const statusEl = document.getElementById('login-status');
+
+    function setStatus(ok, text) {
+      dot.className = 'zh-dot ' + (ok ? 'ok' : 'bad');
+      statusEl.textContent = text;
     }
-    (async()=>{
-      const key=await adminKey.get();
-      if(key)try{if(await verifyKey(ADMIN_API+'/verify',key))location.href='/admin/accounts';}catch{}
+
+    async function login() {
+      const key = el.value.trim();
+      if (!key || btn.disabled) return;
+      btn.disabled = true;
+      try {
+        if (await verifyKey(ADMIN_API + '/verify', key)) {
+          await adminKey.set(key);
+          location.href = '/admin/console';
+        } else {
+          setStatus(false, '密码无效');
+          showToast('密码无效', 'error');
+        }
+      } catch {
+        setStatus(false, '无法连接服务');
+        showToast('连接失败', 'error');
+      } finally {
+        btn.disabled = false;
+      }
+    }
+
+    el.addEventListener('keydown', e => { if (e.key === 'Enter') login(); });
+    btn.addEventListener('click', login);
+
+    (async () => {
+      let up = false;
+      try {
+        const r = await fetch('/meta');
+        if (r.ok) {
+          up = true;
+          document.getElementById('login-version').textContent = 'v' + (await r.json()).version;
+        }
+      } catch {}
+      setStatus(up, up ? '服务正常' : '无法连接服务');
+      if (!up) return;
+      const key = await adminKey.get();
+      if (key) {
+        try { if (await verifyKey(ADMIN_API + '/verify', key)) location.href = '/admin/console'; } catch {}
+      }
     })();
   </script>
 </body>

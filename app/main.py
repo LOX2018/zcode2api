@@ -9,9 +9,10 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 
-from . import logs, settings
+from . import activity, logs, settings
 from .captcha import captcha_manager
 from .claim import claim_round
+from .pricing_pull import puller as pricing_puller
 from .quota import monitor
 from .routes import admin_api, gateway, pages
 
@@ -114,6 +115,7 @@ async def lifespan(app: FastAPI):
     monitor.start()
     captcha_manager.start()   # 验证码预解池后台补充
     claim_round.start()       # 套餐自动领取轮（间隔 0 = 关闭）
+    pricing_puller.start()    # 官方定价页拉取（间隔 0 = 关闭，默认关）
     _run_install_sequence_on_start()
     base = f"http://{_display_host()}:{settings.PORT}"
     logs.banner([
@@ -122,10 +124,13 @@ async def lifespan(app: FastAPI):
         f"{logs._DIM}对话端点{logs._R}  {logs._C}{base}/v1/messages{logs._R}",
     ])
     try:
+        activity.record("boot", f"服务启动 · addr: {base}/v1 · admin: {base}/admin/console · 后端 v{settings.APP_VERSION}")
         yield
     finally:
+        activity.record("boot", "服务停止")
         await monitor.stop()
         await claim_round.stop()
+        await pricing_puller.stop()
         await captcha_manager.close()
 
 

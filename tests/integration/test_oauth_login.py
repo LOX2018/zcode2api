@@ -26,14 +26,20 @@ async def _drain_login_followup() -> None:
 @pytest.mark.integration
 class TestOAuthLoginFlow:
     @pytest.fixture(autouse=True)
-    async def _reset_oauth_mock(self, gateway_client):
+    async def _reset_oauth_mock(self, gateway_client, monkeypatch):
+        from app.routes import admin_api
+
         _, mock = gateway_client
         mock.state.oauth_state = "pending"
         mock.state.oauth_poll_status = 200
         mock.state.oauth_login_fail = False
         mock.state.oauth_exchange_delay = 0
         mock.state.oauth_fail_message = "user denied"
+        # 后台捕获默认不醒：否则 watcher 会往 mock.calls 追加 poll，打乱
+        # 「最后一次调用是 init」这类断言。要测捕获的用例自己把间隔调小。
+        monkeypatch.setattr(admin_api, "LOGIN_WATCH_INTERVAL", 3600.0)
         yield
+        await admin_api._stop_login_watchers()
         await _drain_login_followup()
 
     async def test_start_returns_clickable_url(self, gateway_client):
@@ -248,6 +254,60 @@ class TestOAuthLoginFlow:
         accounts = (await client.get("/admin/api/accounts",
                                      headers={"Authorization": "Bearer zcode"})).json()
         assert accounts["stats"]["total"] == 1
+
+    async def test_background_capture_without_any_poll(self, gateway_client, monkeypatch):
+        """页面一次都不 poll，后台也必须把凭证捞进池子。
+
+        回归用户侧故障：授权完成后刷新页面/切页签/换设备，纯前端轮询一断，
+        凭证就永远捞不回来（「授权 1 分多钟还没入池」）。捕获归服务端，
+        页面只读结果。
+        """
+        from app.routes import admin_api
+
+        client, mock = gateway_client
+        monkeypatch.setattr(admin_api, "LOGIN_WATCH_INTERVAL", 0.05)
+        fid = (await client.post("/admin/api/login/start", json={"label": "acct-bg"},
+                                 headers={"Authorization": "Bearer zcode"})).json()["flow_id"]
+
+        mock.state.oauth_state = "ready"
+        for _ in range(40):
+            await asyncio.sleep(0.05)
+            accounts = (await client.get("/admin/api/accounts",
+                                         headers={"Authorization": "Bearer zcode"})).json()
+            if accounts["stats"]["total"]:
+                break
+        assert accounts["stats"]["total"] == 1, "后台未捕获凭证"
+
+        # 结果留给页面：首个读者拿到 ready，取走即消费
+        poll = (await client.get(f"/admin/api/login/poll/{fid}",
+                                 headers={"Authorization": "Bearer zcode"})).json()
+        assert poll["status"] == "ready"
+        assert poll["account"]["name"] == "acct-bg"
+        assert fid not in admin_api._login_results
+        poll2 = (await client.get(f"/admin/api/login/poll/{fid}",
+                                  headers={"Authorization": "Bearer zcode"})).json()
+        assert poll2["status"] == "expired"
+
+    async def test_cancel_stops_background_capture(self, gateway_client, monkeypatch):
+        """取消是真取消：会话摘掉后后台不再捞，之后同意也不入池。"""
+        from app.routes import admin_api
+
+        client, mock = gateway_client
+        monkeypatch.setattr(admin_api, "LOGIN_WATCH_INTERVAL", 0.05)
+        fid = (await client.post("/admin/api/login/start", json={"label": "acct-gone"},
+                                 headers={"Authorization": "Bearer zcode"})).json()["flow_id"]
+        res = await client.post("/admin/api/login/cancel", json={"flow_id": fid},
+                                headers={"Authorization": "Bearer zcode"})
+        assert res.status_code == 200
+
+        mock.state.oauth_state = "ready"
+        await asyncio.sleep(0.4)  # 够 watcher 再问七八轮，仍在池外才算真停住
+        poll = (await client.get(f"/admin/api/login/poll/{fid}",
+                                 headers={"Authorization": "Bearer zcode"})).json()
+        assert poll["status"] == "expired"
+        accounts = (await client.get("/admin/api/accounts",
+                                     headers={"Authorization": "Bearer zcode"})).json()
+        assert accounts["stats"]["total"] == 0
 
     async def test_admin_key_required(self, gateway_client):
         client, _ = gateway_client

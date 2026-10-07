@@ -86,6 +86,62 @@ MODEL_NAME_MAP = {
 # 上游 3006 model not allowed；按账号实际余额窗口公布）
 AVAILABLE_MODELS = ["GLM-5.3-Flash", "GLM-5.3"]
 
+# ── 模型计价（内置兜底表；上游 billing 族只有 units，无货币价目可拉）──────────
+# 出处：官方定价文档页（服务端渲染，<table> 直读），2026-10-05 逐行核对。
+# 单位：微元 / 百万 token（8 元/1M → 8_000_000），阶梯按总输入长度 [min, max) 命中。
+# ⚠️ 官方页改版会使定时拉取静默失效，本表是最后的 fail-open 兜底——
+#    发现 pricing_pull_status 报错时先核对本表是否落后于官方现价。
+PRICING_SOURCE_URL = "http://docs.bigmodel.cn/cn/guide/start/pricing"
+PRICING_AS_OF = "2026-10-05"
+DEFAULT_MODEL_PRICING: dict[str, dict] = {
+    "GLM-5.3": {"currency": "CNY", "as_of": PRICING_AS_OF, "tiers": [
+        {"tier_id": "standard", "min_input": 0, "max_input": None,
+         "uncached_input": 8_000_000, "cached_input": 2_000_000,
+         "cache_write": 0, "output": 28_000_000}]},
+    "GLM-5.3-Flash": {"currency": "CNY", "as_of": PRICING_AS_OF, "tiers": [
+        {"tier_id": "standard", "min_input": 0, "max_input": None,
+         "uncached_input": 800_000, "cached_input": 230_000,
+         "cache_write": 0, "output": 2_800_000}]},
+    "GLM-5.3-FlashX": {"currency": "CNY", "as_of": PRICING_AS_OF, "tiers": [
+        {"tier_id": "standard", "min_input": 0, "max_input": None,
+         "uncached_input": 2_000_000, "cached_input": 570_000,
+         "cache_write": 0, "output": 7_000_000}]},
+    "GLM-5.2": {"currency": "CNY", "as_of": PRICING_AS_OF, "tiers": [
+        {"tier_id": "standard", "min_input": 0, "max_input": None,
+         "uncached_input": 8_000_000, "cached_input": 2_000_000,
+         "cache_write": 0, "output": 28_000_000}]},
+    "GLM-5.1": {"currency": "CNY", "as_of": PRICING_AS_OF, "tiers": [
+        {"tier_id": "lt32k", "min_input": 0, "max_input": 32768,
+         "uncached_input": 6_000_000, "cached_input": 1_300_000,
+         "cache_write": 0, "output": 24_000_000},
+        {"tier_id": "ge32k", "min_input": 32768, "max_input": None,
+         "uncached_input": 8_000_000, "cached_input": 2_000_000,
+         "cache_write": 0, "output": 28_000_000}]},
+    "GLM-5-Turbo": {"currency": "CNY", "as_of": PRICING_AS_OF, "tiers": [
+        {"tier_id": "lt32k", "min_input": 0, "max_input": 32768,
+         "uncached_input": 5_000_000, "cached_input": 1_200_000,
+         "cache_write": 0, "output": 22_000_000},
+        {"tier_id": "ge32k", "min_input": 32768, "max_input": None,
+         "uncached_input": 7_000_000, "cached_input": 1_800_000,
+         "cache_write": 0, "output": 26_000_000}]},
+    "GLM-5": {"currency": "CNY", "as_of": PRICING_AS_OF, "tiers": [
+        {"tier_id": "lt32k", "min_input": 0, "max_input": 32768,
+         "uncached_input": 4_000_000, "cached_input": 1_000_000,
+         "cache_write": 0, "output": 18_000_000},
+        {"tier_id": "ge32k", "min_input": 32768, "max_input": None,
+         "uncached_input": 6_000_000, "cached_input": 1_500_000,
+         "cache_write": 0, "output": 22_000_000}]},
+    # GLM-4.7 官方按输入长度 + 输出长度双维阶梯，这里只保留输入维（输出档
+    # [0,0.2K) 与 ≥0.2K 的差价对成本估算影响 <2%，双维会在 ticks 里重复计档）
+    "GLM-4.7": {"currency": "CNY", "as_of": PRICING_AS_OF, "tiers": [
+        {"tier_id": "lt32k", "min_input": 0, "max_input": 32768,
+         "uncached_input": 3_000_000, "cached_input": 600_000,
+         "cache_write": 0, "output": 14_000_000},
+        {"tier_id": "ge32k", "min_input": 32768, "max_input": 204800,
+         "uncached_input": 4_000_000, "cached_input": 800_000,
+         "cache_write": 0, "output": 16_000_000}]},
+}
+
 # 上游 max_tokens 合法范围（2026-09-06 实测：超限报 400 code 1210
 # 「max_tokens参数非法：限制数值范围[1,131072]」，客户端（如 auto-compact 续传）
 # 可能带更大的值，网关统一钳制）
@@ -123,6 +179,10 @@ EXHAUST_KEYWORDS = ("quota", "insufficient", "balance", "exhaust", "额度", "�
 # challenge 头），否则一次人机校验续期就把账号错杀成 INVALID（对齐 zapi
 # classifyAccountFailure：403 + captcha 文案 → 非账号失败）。
 CAPTCHA_BODY_MARKERS = ('"code":3007', '"code": 3007')
+# 3006「model not allowed」= 该号套餐窗口不含此模型（2026-09-05 实测 GLM-5.2/5-Turbo）。
+# 属模型维度的不适用，不是账号故障：换号继续，并把该模型钉在该号上，
+# 不做 cooldown/invalid/disabled（gateway._try_account）。
+MODEL_NOT_ALLOWED_MARKERS = ('"code":3006', '"code": 3006', "model not allowed")
 
 # ── 风控信号（2026-09-05 3012 事件实证）────────────────────────────────────────
 # 3012「unusual activity」= 上游风控（HTTP 405 承载），不在官方公开错误码表；

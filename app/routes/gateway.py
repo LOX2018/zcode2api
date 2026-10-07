@@ -15,7 +15,7 @@ import httpx
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
-from .. import constants, logs, reqlog, settings
+from .. import activity, constants, logs, model_access, reqlog, settings
 from ..agent import build_request
 from ..auth_admin import verify_gateway_key
 from ..captcha import captcha_manager
@@ -23,6 +23,7 @@ from ..models import Account, Status
 from ..openai_compat import StreamConverter, anthropic_to_openai, openai_to_anthropic
 from ..quota import fetch_quota
 from ..store import store
+from ..usage import UsageSniffer, cost_for, snapshot_of
 
 _sleep = asyncio.sleep  # 模块级引用：测试可 patch 此名而免污染全局 asyncio
 
@@ -77,6 +78,30 @@ def _normalize_body(body: dict) -> dict:
     return body
 
 
+def _whitelist_reject(req_id: str, model: str, endpoint: str) -> JSONResponse | None:
+    """白名单早退：模型不在可见集内直接 400，不进 _dispatch。
+
+    放在选号之前是刻意的 —— 白名单外的名字上游必然回 3006，让它进调度等于用
+    真额度试错，还会占住账号并发槽位。响应形按端点协议给（Anthropic / OpenAI），
+    客户端 SDK 都能正常解析。
+    """
+    if not model or not model_access.has_knowledge() or model_access.is_allowed(model):
+        return None
+    message = model_access.reject_message(model)
+    reqlog.finish_error(req_id, f"白名单拒绝: {message}", status=400)
+    logs.req_err(req_id, f"白名单拒绝模型 {model}（模式 {model_access.current_mode()}）")
+    if endpoint == "chat":
+        return JSONResponse(
+            {"error": {"message": message, "type": "invalid_request_error",
+                       "code": "model_not_allowed"}},
+            status_code=400,
+        )
+    return JSONResponse(
+        {"type": "error", "error": {"type": "invalid_request_error", "message": message}},
+        status_code=400,
+    )
+
+
 def _is_captcha_error(text: str) -> bool:
     low = text.lower()
     return "captcha" in low or "verify token" in low or "verify failed" in low
@@ -122,6 +147,18 @@ def _is_exhausted(status_code: int, text: str) -> bool:
     return any(k in low for k in _EXHAUST_KEYWORDS)
 
 
+def _is_model_not_allowed(status_code: int, text: str) -> bool:
+    """上游 3006：账号套餐不含所请求的模型（HTTP 400/403 均见过）。
+
+    只按 body 信号判定，不看状态码 —— 3006 与「模型名写错」在上游是同一个码，
+    处置也一样（钉该号该模型），无需区分。
+    """
+    if not text:
+        return False
+    low = text.lower()
+    return any(m.lower() in low for m in constants.MODEL_NOT_ALLOWED_MARKERS)
+
+
 def _is_risk_control(status_code: int, text: str) -> bool:
     """风控信号判定（3012「unusual activity」/ messages 端点 405）。
 
@@ -149,6 +186,9 @@ def _parse_retry_after(value: str | None) -> int | None:
 
 
 def _mark(account: Account, status_value: str, error: str | None = None) -> None:
+    # 只在「转为失效」这一刻记一笔：已失效账号被反复命中不该刷满活动日志
+    if status_value == Status.INVALID and account.status != Status.INVALID:
+        activity.record("error", f"账号「{account.name}」失效：{(error or '')[:100]}")
     account.status = status_value
     account.last_error = error
     if status_value == Status.COOLING:
@@ -170,14 +210,28 @@ def _last_user_text(body: dict) -> str:
     return ""
 
 
+def _key_tag(request: Request) -> tuple[str, str]:
+    """鉴权依赖写进 request.state 的 Key 身份；未启用 Key 校验时是空串。"""
+    matched = getattr(request.state, "gateway_key", None) or {}
+    return str(matched.get("id") or ""), str(matched.get("label") or "")
+
+
 @router.get("/v1/models", dependencies=[Depends(verify_gateway_key)])
 async def list_models():
-    """列出可用模型（Anthropic /v1/models 风格）。"""
+    """列出可用模型（Anthropic /v1/models 风格）。
+
+    集合由白名单模式决定（static/dynamic/hybrid，见 app/model_access）；
+    sources 标出每个名字是人工实测钉定的还是账号权益推导的，客户端与后台
+    都据此判断「这个模型凭什么可见」。多一个未知字段对 Anthropic SDK 无影响。
+    """
+    provenance = {item["name"]: item["sources"] for item in model_access.models_with_provenance()}
     return {
         "object": "list",
         "data": [
-            {"id": i, "type": "model", "display_name": i, "created_at": "2025-01-01T00:00:00Z"}
-            for i in AVAILABLE_MODELS
+            {"id": name, "type": "model", "display_name": name,
+             "created_at": "2025-01-01T00:00:00Z",
+             "sources": provenance.get(name, ["constant"])}
+            for name in model_access.allowed()
         ],
     }
 
@@ -203,7 +257,11 @@ async def messages(request: Request):
     req_id = secrets.token_hex(8)
     logs.req(req_id, str(body.get("model") or "-"), bool(body.get("stream")), _last_user_text(body))
     reqlog.begin(req_id, "messages", str(body.get("model") or "-"),
-                 bool(body.get("stream")), _last_user_text(body))
+                 bool(body.get("stream")), _last_user_text(body), *_key_tag(request))
+
+    reject = _whitelist_reject(req_id, str(body.get("model") or ""), "messages")
+    if reject is not None:
+        return reject
 
     try:
         result = await _dispatch(req_id, body, incoming_headers, port, provider)
@@ -249,7 +307,11 @@ async def chat_completions(request: Request):
     req_id = secrets.token_hex(8)
     logs.req(req_id, str(body.get("model") or "-"), bool(payload.get("stream")), _last_user_text(body))
     reqlog.begin(req_id, "chat", str(body.get("model") or "-"),
-                 bool(payload.get("stream")), _last_user_text(body))
+                 bool(payload.get("stream")), _last_user_text(body), *_key_tag(request))
+
+    reject = _whitelist_reject(req_id, str(body.get("model") or ""), "chat")
+    if reject is not None:
+        return reject
 
     try:
         result = await _dispatch(req_id, body, incoming_headers, port, provider)
@@ -290,8 +352,7 @@ async def chat_completions(request: Request):
         reqlog.finish_error(req_id, "上游响应格式异常", status=502, t_first=result.t_first)
         return JSONResponse({"error": {"message": "上游响应格式异常", "type": "upstream_error"}}, status_code=502)
     usage = data.get("usage") or {}
-    reqlog.finish_ok(req_id, t_first=result.t_first, status=result.resp.status_code,
-                     input_tokens=usage.get("input_tokens"), output_tokens=usage.get("output_tokens"))
+    _finish_ok(req_id, model, usage, t_first=result.t_first, status=result.resp.status_code)
     return JSONResponse(anthropic_to_openai(data, model))
 
 
@@ -314,9 +375,8 @@ def _openai_stream_response(up: _Upstream, model: str, req_id: str) -> Streaming
                         yield out
             yield conv.done()
             logs.req_ok(req_id)
-            reqlog.finish_ok(req_id, t_first=up.t_first, status=up.resp.status_code,
-                             input_tokens=conv.usage.get("prompt_tokens"),
-                             output_tokens=conv.usage.get("completion_tokens"))
+            _finish_ok(req_id, model, conv.anthropic_usage,
+                       t_first=up.t_first, status=up.resp.status_code)
         except asyncio.CancelledError:
             reqlog.finish_error(req_id, "客户端断开", status=499, t_first=up.t_first)
             raise
@@ -337,10 +397,15 @@ async def _dispatch(req_id, body, incoming_headers, port, provider):
     0 = 不限），跳过换下一个账号——不排队（流式请求可占槽位数分钟，排队会
     放大延迟甚至吊死客户端）。满号跳过不计入 MAX_ACCOUNT_ATTEMPTS（只计真正
     进入 _try_account 的次数）。全满/无号 → 503。
+
+    白名单按号筛选（dynamic/hybrid）：权益不含该模型的账号同样静默跳过、不计
+    attempts；全池都跳过时 503 文案区分为「该模型无账号支持」，避免运维误判成
+    额度或并发问题。
     """
     tried: set[str] = set()
     limit = _limit()
     attempts = 0
+    skipped_no_model = 0
 
     while attempts < MAX_ACCOUNT_ATTEMPTS:
         account = store.select(provider, skip_ids=tried)
@@ -349,6 +414,12 @@ async def _dispatch(req_id, body, incoming_headers, port, provider):
         tried.add(account.id)
         if limit > 0 and _inflight.get(account.id, 0) >= limit:
             logs.warn(req_id, f"账号 {account.name} 并发已满（{_inflight.get(account.id, 0)}/{limit}），切换下一个")
+            continue
+        if not model_access.account_supports(account, str(body.get("model") or "")):
+            # 该号权益不含此模型（或已因 3006 被钉）：跳过但不计入 attempts，
+            # 否则池子里健康号多了几次就会被误判成「账号不可用」而提前 503
+            logs.warn(req_id, f"账号 {account.name} 不支持模型 {body.get('model')}，跳过")
+            skipped_no_model += 1
             continue
         attempts += 1
         needs_captcha = provider == "zai" and account.uses_plan_channel()
@@ -382,10 +453,19 @@ async def _dispatch(req_id, body, incoming_headers, port, provider):
             slot_box[0] = None
         return result
 
-    logs.req_err(req_id, "无可用账号 / 额度均已耗尽 / 并发已满")
-    reqlog.finish_error(req_id, "无可用账号 / 额度均已耗尽 / 并发已满", status=503)
+    if skipped_no_model and not attempts:
+        # 池子健康，只是没有一个号的权益覆盖这个模型：文案分开，否则运维会
+        # 往额度/并发方向查，而真因是套餐不含该模型
+        note = f"无可用账号支持模型 {body.get('model')}"
+        message = (f"没有账号的套餐支持模型 {body.get('model')}"
+                   f"（白名单模式 {model_access.current_mode()}），可用模型见 GET /v1/models")
+    else:
+        note = "无可用账号 / 额度均已耗尽 / 并发已满"
+        message = "所有账号均不可用、额度已用完或并发已满，请在后台检查账号状态"
+    logs.req_err(req_id, note)
+    reqlog.finish_error(req_id, note, status=503)
     return JSONResponse(
-        {"error": {"message": "所有账号均不可用、额度已用完或并发已满，请在后台检查账号状态", "type": "no_available_account"}},
+        {"error": {"message": message, "type": "no_available_account"}},
         status_code=503,
     )
 
@@ -449,20 +529,35 @@ def _limit() -> int:
     return store.account_concurrency()
 
 
+def _finish_ok(req_id: str, model: str, raw_usage, *,
+               t_first: float | None = None, status: int | None = None) -> None:
+    """成功收口：token 四件套 + 这一单的费用（无价目或无 token 则费用记为未知）。"""
+    snap = snapshot_of(raw_usage)
+    breakdown = cost_for(model, snap)
+    reqlog.finish_ok(req_id, t_first=t_first, status=status,
+                     input_tokens=snap["input_tokens"], output_tokens=snap["output_tokens"],
+                     cache_read_tokens=snap["cache_read_tokens"],
+                     cache_write_tokens=snap["cache_write_tokens"],
+                     cost_ticks=None if breakdown is None else breakdown.total_ticks,
+                     cost_currency=None if breakdown is None else breakdown.currency)
+
+
 class _Upstream:
     """已建立的上游成功流：由调用方消费并负责关闭。"""
 
-    __slots__ = ("resp", "cm", "client", "t_first", "account_name", "mode", "on_close", "_closed")
+    __slots__ = ("resp", "cm", "client", "t_first", "account_name", "mode", "model",
+                 "on_close", "_closed")
 
     def __init__(self, resp: httpx.Response, cm, client: httpx.AsyncClient,
                  t_first: float | None = None, account_name: str = "", mode: str = "",
-                 on_close=None) -> None:
+                 model: str = "", on_close=None) -> None:
         self.resp = resp
         self.cm = cm
         self.client = client
         self.t_first = t_first
         self.account_name = account_name
         self.mode = mode
+        self.model = model
         self.on_close = on_close
         self._closed = False
 
@@ -484,11 +579,15 @@ class _Upstream:
         up = self
 
         async def _body_iter():
+            sniffer = UsageSniffer()
             try:
                 async for chunk in up.resp.aiter_bytes():
+                    sniffer.feed(chunk)
                     yield chunk
+                sniffer.finalize()
                 logs.req_ok(req_id)
-                reqlog.finish_ok(req_id, t_first=up.t_first, status=up.resp.status_code)
+                _finish_ok(req_id, up.model, sniffer.usage,
+                           t_first=up.t_first, status=up.resp.status_code)
             except asyncio.CancelledError:
                 reqlog.finish_error(req_id, "客户端断开", status=499, t_first=up.t_first)
                 raise
@@ -751,6 +850,19 @@ async def _try_account(req_id, account, body, incoming_headers, port, needs_capt
                     logs.warn(req_id, f"账号 {account.name} 上游 {status_code} 重试耗尽，冷却 {cool}s，切换下一个")
                 return _NEXT_ACCOUNT
 
+            # 上游 3006「model not allowed」：该号套餐不含此模型。这是「号 × 模型」
+            # 的组合事实，不是账号故障 —— 只把这个模型钉在该号上（TTL 内不再选中），
+            # 不动 status / fail_count，换下一个号继续试。
+            if _is_model_not_allowed(status_code, text):
+                denied = str(body.get("model") or "")
+                account.deny_model(denied, settings.MODEL_DENIAL_TTL)
+                account.record_result(False, f"上游 3006：该套餐不含模型 {denied}")
+                store.update_account(account)
+                logs.warn(req_id,
+                          f"账号 {account.name} 被拒模型 {denied}（3006），"
+                          f"钉住 {settings.MODEL_DENIAL_TTL // 86400} 天并切换下一个")
+                return _NEXT_ACCOUNT
+
             # 其它 4xx：直接回传客户端；响应体全量落日志供排查
             # （错误 JSON 通常很小；防御性上限 4KB，超长按 HTML 类 WAF 页处理只留头部）
             account.fail_count += 1
@@ -785,7 +897,8 @@ async def _try_account(req_id, account, body, incoming_headers, port, needs_capt
         _spawn_bg(_safe_refresh(account))
 
         return _Upstream(resp, cm, client, t_first=time.time() - attempt_t0,
-                         account_name=account.name, mode=account.mode)
+                         account_name=account.name, mode=account.mode,
+                         model=str(body.get("model") or ""))
 
 
 def _safe_json(text: str):

@@ -52,20 +52,33 @@ class TestSettingsSecretMask:
     async def test_get_settings_masks_secrets(self, gateway_client, fresh_app):
         client, _ = gateway_client
         fresh_app.set_setting("admin_key", "super-secret-admin-key")
-        fresh_app.set_setting("gateway_key", "sk-gateway-secret-value")
+        full_key = fresh_app.add_api_key("生产")["key"]
 
         res = await client.get("/admin/api/settings",
                                headers={"Authorization": "Bearer super-secret-admin-key"})
         assert res.status_code == 200
-        data = res.json()
-        dumped = json.dumps(data)
+        dumped = json.dumps(res.json())
         assert "super-secret-admin-key" not in dumped
-        assert "sk-gateway-secret-value" not in dumped
-        assert data["admin_key_set"] is True
-        assert data["gateway_key_set"] is True
-        assert data["admin_key_is_default"] is False
-        assert "admin_key_masked" in data
-        assert "gateway_key_masked" in data
+        assert full_key not in dumped
+        assert res.json()["admin_key_set"] is True
+        assert res.json()["admin_key_is_default"] is False
+        assert "admin_key_masked" in res.json()
+
+        res = await client.get("/admin/api/keys",
+                               headers={"Authorization": "Bearer super-secret-admin-key"})
+        assert res.status_code == 200
+        assert full_key not in json.dumps(res.json())
+
+    async def test_settings_separates_capability_from_policy(self, gateway_client, fresh_app):
+        """后台芯片墙靠 model_capability 显示「上游有什么」，不能被手填名单收窄。"""
+        client, _ = gateway_client
+        fresh_app.set_model_whitelist_mode("manual")
+        fresh_app.set_model_whitelist_names("GLM-5.3-Flash")
+        res = await client.get("/admin/api/settings", headers={"Authorization": "Bearer zcode"})
+        assert res.status_code == 200
+        data = res.json()
+        assert data["model_whitelist_effective"] == ["GLM-5.3-Flash"]
+        assert [item["name"] for item in data["model_capability"]] != ["GLM-5.3-Flash"]
 
     async def test_default_admin_key_flag(self, gateway_client, fresh_app):
         client, _ = gateway_client

@@ -38,6 +38,13 @@ class TestRingBuffer:
         assert len(snap) == 1
         assert snap[0]["ok"] is None
         assert snap[0]["t_total"] is None
+        assert snap[0]["key_id"] == "" and snap[0]["key_label"] == ""
+
+    def test_key_tags_survive_finish(self):
+        reqlog.begin("r2b", "messages", "GLM-5.3", False, "", "kid-1", "生产")
+        reqlog.finish_ok("r2b")
+        e = reqlog.snapshot()[0]
+        assert e["key_id"] == "kid-1" and e["key_label"] == "生产"
 
     def test_finish_error_truncates_message(self):
         reqlog.begin("r3", "messages", "GLM-5.3", False, "")

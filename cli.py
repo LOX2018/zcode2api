@@ -2,7 +2,7 @@
 """ZCode Hub
 
 用法:
-  python cli.py serve [--port 3000]        启动网关 + 后台 UI
+  python cli.py serve [--port 3000] [--open-browser]   启动网关 + 后台 UI
   python cli.py login zai [--no-browser]   通过 OAuth 登录 Z.AI 并自动加入账号池
   python cli.py add-account zai <name> <jwt|key>   添加轮询账号
   python cli.py accounts [zai|bigmodel]    查看账号列表
@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import sys
 
 from app import settings
@@ -25,13 +26,29 @@ from app.oauth import ZaiAuthFlow
 from app.quota import fetch_quota
 from app.store import store
 
+# Windows 上 stdout 一旦被重定向（管道、> 文件、被别的进程拉起），Python 会按本地代码
+# 页（中文系统 = cp936）严格编码，✔ 这类字符直接抛 UnicodeEncodeError 崩掉进程。
+# errors=replace 让它降级成 ?，中文输出照旧，控制台行为不变。
+if sys.platform == "win32":
+    for _stream in (sys.stdout, sys.stderr):
+        if _stream is not None:
+            _stream.reconfigure(errors="replace")
+
+# 输出被重定向时自动去色：日志文件里不该有 ANSI 转义码
+if sys.stdout is None or not sys.stdout.isatty():
+    os.environ.setdefault("NO_COLOR", "1")
+
 C = {
     "reset": "\033[0m", "green": "\033[32m", "yellow": "\033[33m",
     "blue": "\033[34m", "red": "\033[31m", "cyan": "\033[36m", "bold": "\033[1m",
 }
 
+_PLAIN = bool(os.environ.get("NO_COLOR"))
+
 
 def c(text: str, color: str) -> str:
+    if _PLAIN:
+        return text
     return f"{C[color]}{text}{C['reset']}"
 
 
@@ -47,6 +64,14 @@ def cmd_serve(args: list[str]) -> None:
         if i + 1 < len(args):
             port = int(args[i + 1])
     settings.PORT = port
+    if "--open-browser" in args:
+        import threading
+        import webbrowser
+
+        # 延迟到 uvicorn 起来之后再开，否则会撞 connection refused
+        timer = threading.Timer(1.5, webbrowser.open, [f"http://127.0.0.1:{port}/admin/login"])
+        timer.daemon = True
+        timer.start()
     import uvicorn
 
     uvicorn.run("app.main:app", host=settings.HOST, port=port, log_level="info")
@@ -172,12 +197,33 @@ def cmd_set_admin_key(args: list[str]) -> None:
     print(c("✔ 已更新后台密码", "green"))
 
 
+def _packaged_status() -> None:
+    """冻结态自检：随包资源是否落在 exe 同级目录，缺什么一目了然。"""
+    from app import body_transform
+
+    print(f"资源根目录  : {c(str(settings.ROOT_DIR), 'blue')}")
+    frontend = settings.FRONTEND_DIR
+    solver = settings.CAPTCHA_SOLVER_JS
+    print("前端        : " + (c(f"OK  {frontend}", "green") if frontend.is_dir()
+                              else c(f"缺失: {frontend}", "yellow")))
+    print("求解器      : " + (c(f"OK  {solver}", "green") if solver.is_file()
+                              else c(f"缺失: {solver}（需在 captcha_node 执行 npm install）", "yellow")))
+    print("浏览器      : " + (c(str(settings.CHROMIUM_PATH), "green") if settings.CHROMIUM_PATH
+                              else c("未探测到 Chrome/Edge，JWT 模式过码不可用", "yellow")))
+    blocks = body_transform._ZCODE_SYSTEM_BLOCKS  # noqa: SLF001
+    print("system 块   : " + (c(f"{len(blocks)} 段", "green") if blocks
+                              else c("0 段，zcode_system.json 未随包", "red")))
+
+
 def cmd_status() -> None:
     print(c("\n--- zcode-hub 状态 ---", "cyan"))
     print(f"数据库      : {c(str(settings.DB_PATH), 'blue')}")
+    if getattr(sys, "frozen", False):
+        _packaged_status()
     print(f"默认端口    : {c(str(settings.PORT), 'blue')}")
     print(f"后台密码    : {'已设置' if store.admin_key() else c('未设置', 'yellow')}")
-    print(f"网关 API Key: {'已设置' if store.gateway_key() else '未设置（不校验）'}")
+    _keys = len(store.api_keys())
+    print(f"网关 API Key: {f'{_keys} 个' if _keys else c('未设置（不校验）', 'yellow')}")
     for p in ("zai", "bigmodel"):
         accounts = store.list_accounts(p)
         active = sum(1 for a in accounts if a.is_selectable())

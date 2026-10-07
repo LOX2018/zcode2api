@@ -116,3 +116,40 @@ def test_retry_settings_defaults():
     assert settings.RETRY_5XX_TIMES == 3
     assert settings.RETRY_5XX_WAIT == 5
     assert settings.COOLING_SECONDS == 300
+
+
+def test_model_not_allowed_signal():
+    # 上游 3006 = 该账号套餐不含此模型；口径同 3012（code 有两种空格形态 + 文案）
+    assert '"code":3006' in constants.MODEL_NOT_ALLOWED_MARKERS
+    assert '"code": 3006' in constants.MODEL_NOT_ALLOWED_MARKERS
+    assert "model not allowed" in constants.MODEL_NOT_ALLOWED_MARKERS
+
+
+def test_pricing_constants():
+    # 内置兜底表是拉取失效时的最后防线：键必须是官方大小写，单价必须是整数微元
+    assert constants.PRICING_SOURCE_URL == "http://docs.bigmodel.cn/cn/guide/start/pricing"
+    assert constants.PRICING_AS_OF == "2026-10-05"
+    assert set(constants.DEFAULT_MODEL_PRICING) >= {
+        "GLM-5.3", "GLM-5.3-Flash", "GLM-5.3-FlashX", "GLM-5.2",
+        "GLM-5.1", "GLM-5-Turbo", "GLM-5", "GLM-4.7"}
+    # /v1/models 公布的名字必须都有价目，否则费用列恒为空
+    for name in constants.AVAILABLE_MODELS:
+        assert name in constants.DEFAULT_MODEL_PRICING
+    for name, raw in constants.DEFAULT_MODEL_PRICING.items():
+        assert raw["currency"] == "CNY" and raw["as_of"] == constants.PRICING_AS_OF
+        for tier in raw["tiers"]:
+            assert tier["min_input"] >= 0
+            for kind in ("uncached_input", "cached_input", "cache_write", "output"):
+                price = tier[kind]
+                assert isinstance(price, int) and not isinstance(price, bool)
+                assert price >= 0, name
+            assert 0 < tier["uncached_input"] <= 1000 * 1_000_000, name
+
+
+def test_whitelist_settings_defaults():
+    from app import settings
+    assert settings.WHITELIST_MODES == ("manual", "static", "dynamic", "hybrid")
+    assert settings.MODEL_WHITELIST_MODE == "manual"
+    assert settings.MODEL_DENIAL_TTL == 7 * 86400
+    # 拉取默认关闭：新外域流量要用户显式打开
+    assert settings.PRICING_PULL_INTERVAL == 0

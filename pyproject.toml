@@ -43,4 +43,4 @@ python_version = "3.11"
 ignore_missing_imports = true
 check_untyped_defs = true
 # M0：仅对纯逻辑新模块开启严格检查；底座文件逐模块加入
-files = ["app/constants.py"]
+files = ["app/constants.py", "app/pricing.py"]

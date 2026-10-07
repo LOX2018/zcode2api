@@ -59,6 +59,9 @@ class Account:
     # 安装身份：入池分配的稳定安装令牌（hub 内部，跨账号不重复，导出时剥离）
     install_id: str | None = None
     installed_at: float | None = None  # 按账号安装序完成时间；None = 未安装
+    # 上游 3006「model not allowed」按账号钉格子：{ 规范模型名: 过期 epoch 秒 }
+    # 套餐差异是账号属性而非全局事实，命中过的组合在 TTL 内直接跳过，不再烧额度试错
+    model_denials: dict = field(default_factory=dict)
 
     @staticmethod
     def create(provider: str, name: str, secret: str) -> Account:
@@ -160,6 +163,23 @@ class Account:
         now = now or time.time()
         return bool(self.cooling_until and now < self.cooling_until)
 
+    def deny_model(self, model: str, ttl: float, now: float | None = None) -> None:
+        """上游 3006：把「该账号不支持该模型」钉在账号上 TTL 秒。
+
+        不动 status / fail_count —— 套餐不含某模型不是账号故障，禁用会让其它
+        模型一起陪葬。过期自动失效（读时判定），套餐升级后无需人工清理。
+        """
+        now = now or time.time()
+        self.model_denials = {k: v for k, v in self.model_denials.items()
+                              if isinstance(v, (int, float)) and v > now}
+        if ttl > 0 and model:
+            self.model_denials[model] = now + ttl
+
+    def is_model_denied(self, model: str, now: float | None = None) -> bool:
+        now = now or time.time()
+        until = self.model_denials.get(model)
+        return isinstance(until, (int, float)) and until > now
+
     def to_dict(self) -> dict:
         return asdict(self)
 
@@ -208,6 +228,7 @@ class Account:
             "cooling_until": self.cooling_until,
             "last_error": self.last_error,
             "created_at": self.created_at,
+            "model_denials": dict(self.model_denials),
             "fingerprint": self.fingerprint_view(),
             "install_id": self.install_id,
             "installed_at": self.installed_at,

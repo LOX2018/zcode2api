@@ -231,7 +231,9 @@ class CaptchaManager:
         # 强制直连求解：token 求解出口必须与 billing/claim 一致（claim 已改直连，
         # 见 _billing_request 注释）；剥离代理变量后 chrome 不带 --proxy-server，
         # 出口确定，不受 hub env 的 US 代理影响。
-        solver_env = {**os.environ, "ZCODE_CHROMIUM_PATH": str(settings.CHROMIUM_PATH)}
+        solver_env = {**os.environ}
+        if settings.CHROMIUM_PATH:
+            solver_env["ZCODE_CHROMIUM_PATH"] = str(settings.CHROMIUM_PATH)
         for key in ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy",
                     "ALL_PROXY", "all_proxy"):
             solver_env.pop(key, None)

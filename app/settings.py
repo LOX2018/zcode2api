@@ -6,16 +6,33 @@
 from __future__ import annotations
 
 import os
+import sys
 from pathlib import Path
 
 from dotenv import load_dotenv
 
 from . import constants
 
-load_dotenv()
+
+def _base_dir() -> Path:
+    """资源与配置的锚点目录。
+
+    冻结态（PyInstaller）下 __file__ 落在临时打包目录里，必须改用 exe 同级目录，
+    这样 data/、frontend/、captcha_node/、.env 才都在用户看得见、可写的位置。
+    """
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).resolve().parent
+    return Path(__file__).resolve().parents[1]
+
 
 # 项目根目录
-ROOT_DIR = Path(__file__).resolve().parents[1]
+ROOT_DIR = _base_dir()
+
+_dotenv_file = ROOT_DIR / ".env"
+if _dotenv_file.is_file():
+    load_dotenv(_dotenv_file)
+else:
+    load_dotenv()
 
 
 def _resolve_path(env_name: str, default: str) -> Path:
@@ -77,7 +94,44 @@ CAPTCHA_SOLVER_JS = CAPTCHA_SOLVER_DIR / (
     "solver.js" if CAPTCHA_SOLVER_MODE == "legacy" else "solver_pw.js"
 )
 # Chromium 可执行文件（solver_pw.js 用；env 可覆盖，缺省按常见路径探测）
-CHROMIUM_PATH = os.getenv("ZCODE_CHROMIUM_PATH", "/usr/local/bin/chromium")
+def _detect_chromium(configured: str) -> str:
+    """定位 Chromium 内核浏览器；配置值指向的文件存在就优先用它，否则按平台探测。
+
+    打包版在 Windows 上必须自己找到 Chrome/Edge，否则 JWT 模式过码起不来
+    （solver_pw.js 也有一份探测表，这里是第一道）。
+    """
+    if configured and Path(configured).is_file():
+        return configured
+    candidates: list[str] = []
+    if sys.platform == "win32":
+        for env_key in ("ProgramFiles", "ProgramFiles(x86)", "LOCALAPPDATA"):
+            base = os.environ.get(env_key)
+            if base:
+                candidates += [
+                    str(Path(base) / "Google" / "Chrome" / "Application" / "chrome.exe"),
+                    str(Path(base) / "Microsoft" / "Edge" / "Application" / "msedge.exe"),
+                ]
+    elif sys.platform == "darwin":
+        candidates += [
+            "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+            "/Applications/Chromium.app/Contents/MacOS/Chromium",
+            "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
+        ]
+    else:
+        candidates += [
+            "/usr/local/bin/chromium",
+            "/usr/local/bin/google-chrome",
+            "/usr/bin/chromium",
+            "/usr/bin/chromium-browser",
+            "/usr/bin/google-chrome",
+        ]
+    for candidate in candidates:
+        if Path(candidate).is_file():
+            return candidate
+    return configured
+
+
+CHROMIUM_PATH = _detect_chromium(os.getenv("ZCODE_CHROMIUM_PATH", ""))
 CAPTCHA_SOLVE_RETRIES = _int("ZCODE_CAPTCHA_RETRIES", 4)
 # 每次求解超时（秒）：真浏览器含 launch（内存压力下可 30s+）+ SDK 加载 + 无痕验证，
 # 且 solver 进程内自旋重试 3 次（约 40s×3），须容得下
@@ -122,6 +176,24 @@ ACCOUNT_CONCURRENCY = _int("ZCODE_ACCOUNT_CONCURRENCY", 2)
 # 仅入池/手动触发。运行期可在后台设置改（meta 表即时生效）
 CLAIM_ROUND_INTERVAL = _int("ZCODE_CLAIM_ROUND_INTERVAL", 3600)
 
+# ── 模型白名单与计价 ─────────────────────────────────────────────────────────
+# manual = 只认后台手填的模型名单（默认，也是唯一「你说了算」的一档）；
+# static = 只用 constants.AVAILABLE_MODELS 写死表；dynamic = 从池内账号额度窗口
+# （billing/balance 的 show_name + meter=model_usage 的赠送项）推导；
+# hybrid = 内置 ∪ 额度派生。manual 与 dynamic/hybrid 在名单为空时都回落 static，
+# 防止「清空名单 / 无账号未刷额度」把网关自我锁死。
+WHITELIST_MODES = ("manual", "static", "dynamic", "hybrid")
+MODEL_WHITELIST_MODE = (os.getenv("ZCODE_MODEL_WHITELIST_MODE", "manual").strip().lower()
+                        or "manual")
+if MODEL_WHITELIST_MODE not in WHITELIST_MODES:
+    MODEL_WHITELIST_MODE = "manual"
+# 上游 3006 命中后该模型在该号的钉除时长（秒），到期自动回到候选集。
+# 3006 可能是套餐级而非账号级，故只钉模型、不动账号状态。
+MODEL_DENIAL_TTL = _int("ZCODE_MODEL_DENIAL_TTL", 7 * 86400)
+# 官方定价页定时拉取间隔（秒）。默认 0 = 关闭：这是本项目唯一的新外域流量，
+# 且拉失败也只回落内置表，无必要不开。运行期可在后台设置改（meta 表即时生效）
+PRICING_PULL_INTERVAL = _int("ZCODE_PRICING_PULL_INTERVAL", 0)
+
 # ── 上游端点 ─────────────────────────────────────────────────────────────────
 # 上游端点：默认值统一收口在 constants.py，环境变量仅作覆盖
 UPSTREAM = {
@@ -140,7 +212,7 @@ OAUTH_API_BASE = os.getenv("ZCODE_OAUTH_API_BASE", constants.ZCODE_ORIGIN + "/ap
 ZAI_EXCHANGE_ORIGIN = os.getenv("ZCODE_EXCHANGE_ORIGIN", constants.ZAI_API_ORIGIN)
 
 USER_AGENT = os.getenv("UPSTREAM_USER_AGENT", constants.USER_AGENT)
-APP_VERSION = "2.6.8"
+APP_VERSION = "2.6.9"
 
 _FRONTEND_VERSION_FILE = FRONTEND_DIR / "version"
 

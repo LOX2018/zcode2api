@@ -23,10 +23,27 @@ CREATE INDEX idx_acc_status   ON accounts(status);
 
 -- data JSON 字段（Account.to_dict()）
 -- { jwt_token?, api_key?, api_secret?, user_id?, quota:{model:{total,used,remaining,expires_at}},
---   plan_slots:[...], plan: {...}, use_count, fail_count, last_used_at, last_checked_at, last_error }
+--   plan_slots:[...], plan: {...}, plans:[...], use_count, fail_count, last_used_at,
+--   last_checked_at, last_error, model_denials:{model:过期时间戳} }
 
--- 设置 KV（admin_key / gateway_key / 各 interval）
+-- 设置 KV（admin_key / 各 interval / 计价三层）
 CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+-- 本项目最早的 JSON 值就落在这里（此前 value 一律是标量）：pricing_overrides /
+-- pricing_pulled / pricing_pull_status 存整张表，读时校验 {"v":1}，版本不认识
+-- 就当空表回落下一层（ignore-and-fallback），不做迁移。
+-- model_whitelist_names 是标量原文（换行分隔的模型名，界面回填要一字不差），
+-- 归一/去重放在读取侧 app/model_access.parse_names，不入库。
+
+-- 网关 API Key（后台「生成」，明文只回显一次；旧版单把 meta.gateway_key 启动时
+-- 自动导入成一条 label「导入的旧 Key」并清空该 meta 值，只导一次）
+CREATE TABLE api_keys (id TEXT PRIMARY KEY, label TEXT NOT NULL,
+                       key TEXT NOT NULL, created_at REAL NOT NULL);
+
+-- 活动日志（服务启停 / 账号增删改 / 参数与 Key 变更 / 账号失效；倒序读，
+-- 插入时截断到 ACTIVITY_KEEP=2000 条，重启不清零）
+CREATE TABLE activity (id INTEGER PRIMARY KEY AUTOINCREMENT,
+                       ts REAL NOT NULL, kind TEXT NOT NULL, text TEXT NOT NULL);
+CREATE INDEX idx_act_ts ON activity(ts DESC);
 
 -- 领取历史
 CREATE TABLE claim_history (
@@ -45,6 +62,11 @@ CREATE TABLE claim_history (
 - **内存驻留 + 落库同步**：运行期账号对象常驻内存保证轮询游标与状态实时性，每次变更 `INSERT OR REPLACE` 落库；启动时读快照重建（z2a `store.py` 语义）。
 - 凭证字段在 `data` JSON 内**加密存储**（AES-256-GCM，主密钥来自 `ZCODE_MASTER_SECRET` env；缺省派生方式同 enc:v1 的 fallback 思路，文档化并可在测试中固定）。这是对 z2a 明文存储缺陷的修复。
 - `public_view()` 一律脱敏：`{key[:8]}…{key[-6:]}`。
+- **新增运行时字段的双向兼容**（`model_denials`、`plans`）：`Account.from_dict` 只按
+  `__dataclass_fields__` 取已知键，所以旧版本读新库会丢掉这些键（等价于「没钉过 3006、
+  没刷过多套餐」，下次刷新自愈），新版本读旧库拿默认空值。`.zsb` 与内部
+  `/admin/api/export` 都只带凭证（`name`/`mode`/`secret`），运行时统计与钉格子
+  从不跨文件边界，因此不影响与 zcode-switch 的互导。
 
 ## 2. 运行时配置（settings）
 
@@ -52,7 +74,6 @@ CREATE TABLE claim_history (
 |------|------|------|
 | `ZCODE_PORT` / `ZCODE_HOST` | 3000 / 0.0.0.0 | 服务监听 |
 | `ZCODE_ADMIN_KEY` | `zcode` | 后台密码初值（之后以 DB meta 为准） |
-| `ZCODE_GATEWAY_KEY` | 空 | 网关 API Key（空 = 不校验，仅限本机使用） |
 | `ZCODE_MASTER_SECRET` | 派生 | 账号凭证加密主密钥 |
 | `ZCODE_DATA_DIR` | `./data` | SQLite 与凭证目录 |
 | `POOL_MAX_ATTEMPTS` | 4 | 单请求内换号上限 |
