@@ -3,7 +3,12 @@
 **ZCode 账号运营 + 双协议网关一体机**：把池内 ZCode Coding Plan / Start Plan / API Key 账号额度，统一转换为标准的
 **Anthropic Messages API**（`/v1/messages`）与 **OpenAI Chat Completions API**（`/v1/chat/completions`），向 Claude Code、Cline、Codex CLI、Chatbox、NextChat 等各类 Agent 与客户端提供高可用 API 服务。
 
-自带一套完整的账号运营控制台：多账号池轮询、高可信成套桌面指纹仿真、官方首启安装序仿真、单账号并发控制、429/5xx/3012 阶梯容灾、请求全景监控、限时套餐自动与手动领取、OAuth 免密登录入池，以及免浏览器的阿里云无痕验证求解——开箱即用，自托管部署。
+自带一套完整的账号运营控制台：多账号池轮询、高可信成套桌面指纹仿真、官方首启安装序仿真、单账号并发控制、429/5xx/3012 阶梯容灾、请求全景监控、限时套餐自动与手动领取、OAuth 免密登录入池，以及阿里云无痕验证自动求解——开箱即用，自托管部署。
+
+两种用法，按需选一种：
+
+- **Windows 启动包**（推荐给不折腾的人）：装完双击图标，托盘常驻起服务，**不需要 Python、不需要源码、不需要 `npm install`**。见 [Windows 启动包](#windows-启动包)，二进制在 [Releases](https://github.com/LOX2018/zcode2api/releases)。
+- **源码运行**（开发 / Linux / macOS）：见 [快速开始](#快速开始)。
 
 ---
 
@@ -24,7 +29,7 @@
   - 后台暴力破解防护：客户端 IP 连续登录失败达上限自动锁定 5 分钟。
   - 设置密钥脱敏回显：GET 设置接口密钥自动打码，保障安全性。
 - **限时套餐领取（双轨机制）**：
-  - 自动领取：入池即自动领取全部可领套餐，并有可配置的周期自动领取轮（默认 600 秒，后台设置页可改，0 = 关闭），持续盯当期活动赠送。
+  - 自动领取：入池即自动领取全部可领套餐，并有可配置的周期自动领取轮（默认 3600 秒，后台设置页可改，0 = 关闭），持续盯当期活动赠送。
   - 领取语义对齐官方 3.11.2：成功回执携带上游 `server_time` 与套餐窗口；1005「名额用完」附带名额恢复时间 `next_at`，领取轮按其退避（等待期不重试领取、不耗验证码，`next_at` 过后自动恢复）。
   - 浏览器过码：支持在前端调起阿里云滑块验证码进行手动领取，应对极严风控环境。
 - **OAuth CLI 免密登录**：
@@ -44,45 +49,121 @@
 
 ## 快速开始
 
+需要 Python 3.11+。虚拟环境里的可执行文件位置按平台不同：
+
 ```bash
+# macOS / Linux
 python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
 cp .env.example .env            # 按需修改密钥、端口等
 .venv/bin/python cli.py serve   # 启动网关 + 后台 UI（默认 http://0.0.0.0:3000）
 ```
 
-- 后台管理：`http://127.0.0.1:3000/admin/login`（初始账号见 `.env` 的 `ZCODE_ADMIN_KEY`）
+```powershell
+# Windows（PowerShell；注意是 Scripts 不是 bin）
+py -3.12 -m venv .venv ; .\.venv\Scripts\python.exe -m pip install -r requirements.txt
+Copy-Item .env.example .env
+.\.venv\Scripts\python.exe cli.py serve
+```
+
+> 用 `uv` 也一样：`uv sync` 或 `uv pip install -r requirements.txt --python .venv\Scripts\python.exe`。
+> 本项目仓库内的 venv 由 uv 创建（Python 3.12），uv 建的 venv 默认不带 pip。
+
+- 后台管理：`http://127.0.0.1:3000/admin/login`（登录**只需密码，没有用户名**；初始密码见 `.env` 的 `ZCODE_ADMIN_KEY`，首次启动写库后以库为准）
 - 对话端点：
   - Anthropic 协议：`POST http://127.0.0.1:3000/v1/messages`（兼容 Claude Code、Cline）
   - OpenAI 协议：`POST http://127.0.0.1:3000/v1/chat/completions`（兼容 OpenAI 客户端）
   - 模型列表：`GET http://127.0.0.1:3000/v1/models`
   - 探活端点：`GET http://127.0.0.1:3000/meta`
 
-> 使用 Z.AI **JWT 模式**需要 Node.js 求解验证码，首次先执行：`cd captcha_node && npm install`。
+> 使用 Z.AI **JWT 模式**需要 Node.js 求解验证码，首次先执行：`cd captcha_node && npm install`（依赖 `puppeteer-core`，还需要本机有 Chrome 或 Edge，见[验证码求解](#阿里云无痕验证求解)）。
+
+## Windows 启动包
+
+Python 侧全部冻结进 exe，`frontend/` 与 `captcha_node/` 作为 exe 同级资源随包（静态页与 Node 子进程必须读真实磁盘文件）。装完双击即起服务。
+
+**下载**（[Releases](https://github.com/LOX2018/zcode2api/releases)，同一份内容的两种形态）：
+
+| 产物 | 形态 | 体积 |
+|------|------|------|
+| `ZCodeHub-Setup-<ver>.exe` | Inno Setup 安装器：开始菜单/桌面快捷方式、可选开机自启、带卸载器 | 约 27 MB（装后约 113 MB，其中 `node_modules` 占 58 MB）|
+| `ZCodeHub-<ver>-portable.zip` | 绿色目录，解压即用，不建快捷方式 | 约 40 MB |
+
+**托盘是默认入口**（`ZCodeHubTray.exe`）：没有黑色窗口常驻，误点也不会把服务带走。右键托盘图标：
+
+| 菜单项 | 说明 |
+|--------|------|
+| 打开管理后台 | 默认动作，**双击图标即触发** |
+| 启动服务 / 重启服务 / 停止服务 | 按当前状态置灰；服务是托盘拉起的子进程 |
+| 打开日志 | `data\hub.log` |
+| 退出（同时停止服务） | 卸载或整目录搬走前请先点这里 |
+
+可靠性：服务进程崩了自动重启；**180 秒内连续 3 次启动失败则停止重试**并把原因写进日志，不再空转；端口已被外部实例占用时只观察、不接管，避免两个实例互踩同一份账号池。
+
+`ZCodeHub.exe`（控制台版）保留为**调试入口**：`serve --open-browser` 起服务并弹浏览器，窗口开着=服务在跑，关窗=停服。CLI 子命令与源码版一一对应，把 `python cli.py` 换成 `ZCodeHub.exe` 即可。
+
+**依赖**：
+
+- 不需要 Python、不需要源码、不需要 `npm install`——都冻结或随包了。
+- JWT 模式的验证码求解要调用系统 **Node.js**（`captcha_node\solver_pw.js`）。没装 Node 时网关照常起、API Key 通道照常可用，只是 JWT 取 token 与自动领取套餐不可用。`node` 不在 PATH 就填 `ZCODE_NODE_PATH`。
+- 需要 **Chrome 或 Edge**（Win10/11 自带 Edge 即满足）：按 Program Files / Program Files (x86) / LOCALAPPDATA 顺序自动探测，`ZCODE_CHROMIUM_PATH` 可覆盖，探测结果看 `ZCodeHub.exe status` 的「浏览器」一行。
+- 出网：验证码页从阿里云 CDN（`o.alicdn.com`）加载官方 SDK，求解阶段必须能访问公网。
+
+**密码与暴露面**：随包 `.env` 是安全默认——`ZCODE_HOST=127.0.0.1`（只本机）+ `ZCODE_ADMIN_KEY=zcode`（**随包默认口令，对外开放前务必改掉**）。后台登录只需密码、没有用户名；首次启动把密码写进库，之后以库为准，再改 `.env` 不生效，请用 `ZCodeHub.exe set-admin-key <新密码>`。把 `ZCODE_HOST` 改成 `0.0.0.0` 等于把整套后台和号池交给整个局域网——先换强密码再开。
+
+**数据与迁移**：`ZCODE_DATA_DIR=data` 按 **exe 所在目录**解析（不是当前目录）。目录里 `accounts.db`（账号凭证、后台密码、网关 Key、用量）、`device_mid`（本机设备指纹）、`hub.log`。换机：`ZCodeHub.exe export accounts.json` 后在新机 `import accounts.json`，或整目录拷过去（拷之前先停服务，避免带走半截 WAL）。
+
+**卸载**：控制面板 →「ZCode Hub」→ 卸载。程序文件与快捷方式删掉，**`data\` 保留**（里面有你的凭证，防误删）；确认不要了再手工删整个安装目录。
+
+**两个边界，如实说明**：
+
+1. 「不含源码」只覆盖 Python 侧：`frontend/` 的 HTML/JS 与 `captcha_node/` 的 `solver_pw.js`、`node_modules/` 仍是磁盘明文，需要这些也不可读得另行做 JS 混淆打包。
+2. 本项目 license 为 `AGPL-3.0-only`：自己换机使用无碍；把这个安装包分发给他人（尤其对外提供 API 服务）须同时提供对应源码的获取途径。
+
+**从源码构建**（Windows，PowerShell，在 `repo/` 下执行）：
+
+```powershell
+.\packaging\build.ps1                  # 冻结 exe → 组装 stage → 编译安装器
+.\packaging\build.ps1 -Zip             # 顺带压一份绿色 zip
+.\packaging\build.ps1 -SkipInstaller   # 只要 exe + stage，不碰 Inno Setup
+.\packaging\build.ps1 -Clean           # 先清上一次产物
+```
+
+前置：`repo\.venv`（Python 3.11+，脚本会自装 PyInstaller）与 Inno Setup 6（`winget install JRSoftware.InnoSetup`）。产物落在 `packaging\output\`。
+
+入包的 `data\` 默认是**空目录**；`-WithExistingData` 会把本机 `repo\data\` 一起打进去（含真实账号凭证，脚本会明确警告，切勿分发）。两处不显然的编码约束：`build.ps1` 必须保持纯 ASCII——PowerShell 5.1 按 cp936 读无 BOM 脚本，中文注释末尾的前导字节会吞掉换行、把下一行代码并入注释（用 `packaging\check_ascii.ps1` 自检）；`.iss` 反过来必须带 BOM，否则中文向导乱码。
 
 ## 快速上手一个账号
 
+下面 `$PY` 指本平台解释器：macOS/Linux 是 `.venv/bin/python`，Windows 是 `.venv\Scripts\python.exe`；
+Windows 启动包则把 `cli.py` 换成 `ZCodeHub.exe`。
+
 ```bash
-# 方式一：OAuth 登录（免密，自动入池 + 自动兑换回退 Key）
-.venv/bin/python cli.py login zai
+# 方式一：OAuth 登录（免密，自动入池 + 自动兑换回退 Key，--no-browser 只打印链接）
+$PY cli.py login zai
 
 # 方式二：手动加入现成凭证（JWT 三段点分 或 API Key）
-.venv/bin/python cli.py add-account zai 名称 <jwt|key>
+$PY cli.py add-account zai 名称 <jwt|key>
 ```
+
+两种方式入池后都会自动跑一遍安装序（`client/configs` + 激活上报）并对 JWT 账号领取当期套餐。
 
 ## 命令行
 
 ```bash
-python cli.py serve [--port 3000]    启动网关 + 后台 UI
-python cli.py login zai              通过 OAuth 登录 Z.AI 并自动入池
-python cli.py add-account <zai|bigmodel> <name> <jwt|key>   添加账号
-python cli.py accounts [zai|bigmodel]  查看账号列表
-python cli.py remove-account <provider> <id|name>  删除账号
-python cli.py quota                  查看各账号实时额度
-python cli.py status                 查看配置概览
-python cli.py set-admin-key <key>    设置后台密码
-python cli.py export [file]          导出全部账号
-python cli.py import <file>          导入账号
+python cli.py serve [--port 3000] [--open-browser]   启动网关 + 后台 UI
+python cli.py login zai [--no-browser]   通过 OAuth 登录 Z.AI 并自动加入账号池
+python cli.py add-account <zai|bigmodel> <name> <jwt|key>   添加轮询账号
+python cli.py accounts [zai|bigmodel]    查看账号列表
+python cli.py remove-account <provider> <id|name>   删除账号
+python cli.py quota                      查看各账号实时额度
+python cli.py status                     配置概览 + 随包资源自检
+python cli.py set-admin-key <key>        设置后台密码
+python cli.py export [file]              导出账号
+python cli.py import <file>              导入账号
 ```
+
+Windows 启动包里的 `ZCodeHub.exe` / `ZCodeHubTray.exe` 走同一套子命令（`ZCodeHub.exe status`、`ZCodeHub.exe accounts`）。
+冻结态的 `status` 会额外自检四项并直接指出缺什么：前端目录、求解器脚本、浏览器探测结果、`zcode_system.json` 的段数。
 
 ## 后台 UI
 
@@ -161,14 +242,21 @@ OAuth 授权的轮询也挂在页签上，切走会停并提示。
 
 > 成功响应可清除 `COOLING` / `EXHAUSTED`；额度恢复时后台监控也会自动回 `ACTIVE`。
 
-## 无痕验证（免浏览器）
+## 阿里云无痕验证求解
 
 JWT 账号调用上游时需携带阿里云无痕验证参数（请求头 `X-Aliyun-Captcha-Verify-Param`）。
-本项目**不启动真实浏览器**，而是用 **Node + jsdom** 在模拟浏览器环境中运行阿里云官方无痕 SDK 直接求解该参数。
 
-- 求解器位于 `captcha_node/solver.js`，首次使用前执行 `cd captcha_node && npm install`。
-- `app/captcha.py` 以子进程方式调用，内置预热池、结果缓存（默认 45s）、并发去重与失败重试。
-- 求解器在 jsdom 中补齐了 SDK 依赖的浏览器 API（`matchMedia`、canvas/WebGL、`Worker`、`OffscreenCanvas`）。
+**主路是真浏览器**：`captcha_node/solver_pw.js` 用 `puppeteer-core` 驱动系统里的 Chromium/Edge，在真环境里加载官方
+`AliyunCaptcha` SDK（`initAliyunCaptcha(mode:popup)` → `startTracelessVerification()`）取回 verifyParam——真环境下无痕验证自动通过，不需要拖滑块。
+早先的 **happy-dom 模拟 DOM 路线**（`captcha_node/solver.js`）自 2026-09 起被上游风控以「unusual activity」全拒，
+只留作回滚：`ZCODE_CAPTCHA_SOLVER=legacy`。
+
+- 首次使用前执行 `cd captcha_node && npm install`（依赖 `puppeteer-core`；启动包已把 `node_modules/` 随包）。
+- `app/captcha.py` 以子进程方式调用（一进程一解，成功打印 `VERIFY_PARAM=` 后退出），并维护**预解 token 池**：
+  热路径不等待，请求到来直接取一枚已解好的参数（亚毫秒），后台按库存下限持续补；verifyParam 实际时效约 2 分钟，
+  池内 FIFO + 超龄丢弃；上游回挑战时整池作废（这批指纹可能已被盯上，继续复用只会连环 3007）。
+- 真浏览器求解较重（10–40s/枚），因此池默认 `min1/max2`；内置并发去重与失败重试。
+- 浏览器定位：`ZCODE_CHROMIUM_PATH` 显式指定优先，否则按常见安装路径自动探测 Chrome/Edge（见 `ZCodeHub.exe status`）。
 - 配置与会话缓存兜底：`client/configs` 拉取失败时回落内置默认参数。
 
 ## 鉴权
@@ -186,25 +274,29 @@ JWT 账号调用上游时需携带阿里云无痕验证参数（请求头 `X-Ali
 | 变量 | 默认值 | 说明 |
 |------|--------|------|
 | `ZCODE_PORT` | 3000 | 服务端口 |
-| `ZCODE_HOST` | 0.0.0.0 | 监听地址 |
-| `ZCODE_ADMIN_KEY` | change-me | 后台密码初始值（之后写库，以库为准）|
-| `ZCODE_DATA_DIR` | data | 数据目录（SQLite 存放处）|
-| `ZCODE_QUOTA_REFRESH_INTERVAL` | 60 | 后台刷新额度间隔（秒），0 关闭 |
-| `ZCODE_COOLING_SECONDS` | 300 | 限流冷却时长（秒）|
+| `ZCODE_HOST` | 0.0.0.0 | 监听地址（启动包内的 `.env` 预置为 `127.0.0.1`）|
+| `ZCODE_ADMIN_KEY` | `zcode` | 后台密码初始值，首次启动写入库后**以库为准**；改密码用 `set-admin-key`。开 `0.0.0.0` 前先换掉 |
+| `ZCODE_DATA_DIR` | data | 数据目录（SQLite 存放处）；相对路径按 exe / 仓库根解析 |
+| `ZCODE_FRONTEND_DIR` | frontend | 前端目录，可指向独立部署目录（包内 `statics` 仅兜底）|
+| `ZCODE_QUOTA_REFRESH_INTERVAL` | 1800 | 后台刷新额度间隔（秒），0 关闭。高频连续查 billing 是风控主信号，故收敛到 30 分钟 |
+| `ZCODE_COOLING_SECONDS` | 300 | 5xx 重试耗尽后的账号冷却时长（秒）|
 | `ZCODE_ACCOUNT_CONCURRENCY` | 2 | 单账号并发上限，0 不限（运行时可在后台设置改，以库为准）|
-| `ZCODE_CLAIM_ROUND_INTERVAL` | 600 | 套餐自动领取轮间隔（秒），0 关闭（运行时可在后台设置改，以库为准）|
+| `ZCODE_CLAIM_ROUND_INTERVAL` | 3600 | 套餐自动领取轮间隔（秒），0 关闭（运行时可在后台设置改，以库为准）|
 | `ZCODE_NODE_PATH` | node | 验证码求解所用 Node 可执行文件 |
+| `ZCODE_CAPTCHA_SOLVER` | `pw` | `pw` = 真浏览器 `solver_pw.js`；`legacy` = 回滚到 happy-dom `solver.js`（2026-09 起被风控全拒）|
+| `ZCODE_CHROMIUM_PATH` | 自动探测 | Chromium 内核浏览器路径；未配置时按 Windows/macOS/Linux 常见安装位置探测 |
 | `ZCODE_CAPTCHA_RETRIES` | 4 | 单次求解失败重试次数 |
-| `ZCODE_CAPTCHA_TIMEOUT` | 40 | 单次求解超时（秒）|
-| `CAPTCHA_CACHE_TTL` | 45000 | 验证码结果缓存时长（ms）|
+| `ZCODE_CAPTCHA_TIMEOUT` | 240 | 单次求解总超时（秒），含 Chromium 启动与 solver 进程内自旋 |
+| `CAPTCHA_POOL_MIN` / `CAPTCHA_POOL_MAX` | 1 / 2 | 预解 token 池的目标库存与上限 |
+| `CAPTCHA_TOKEN_TTL` | 95000 | 单枚 verifyParam 最大可用时长（ms，上游实际约 2 分钟）|
 | `ZAI_UPSTREAM_URL` / `ZAI_FALLBACK_URL` / `BIGMODEL_UPSTREAM_URL` | — | 上游端点覆盖 |
 
 ## 开发与测试
 
 ```bash
-.venv/bin/python -m pytest            # 全量测试（Mock 上游，无真实网络）
-.venv/bin/ruff check app tests
-.venv/bin/mypy app/constants.py
+$PY -m pytest            # 全量测试（Mock 上游，无真实网络）
+$PY -m ruff check app tests
+$PY -m mypy app/constants.py
 ```
 
 测试全部走 **Mock 上游**：`tests/mock_upstream/` 模拟 Z.AI 被依赖的全部端点，
@@ -221,11 +313,12 @@ JWT 账号调用上游时需携带阿里云无痕验证参数（请求头 `X-Ali
 
 - Python 3.11+ · FastAPI · Uvicorn · httpx
 - SQLite（账号 / 设置持久化，WAL 模式）
-- Node.js + jsdom（免浏览器求解阿里云无痕验证）
+- Node.js + `puppeteer-core`（真浏览器里跑阿里云官方 SDK 求无痕验证参数）；`happy-dom` 模拟路线仅作回滚
+- 交付：PyInstaller（onedir，`ZCodeHub.exe` + `ZCodeHubTray.exe` 共享 `_internal/`）+ Inno Setup 安装器；构建脚本在 `packaging/`
 
 ## 许可证
 
-本项目采用 [AGPL-3.0](LICENSE) 许可证。
+本项目采用 [AGPL-3.0](LICENSE) 许可证。Releases 里的二进制产物由同一仓库的源码构建，对应源码即本仓库对应 tag。
 
 ## 免责声明
 
